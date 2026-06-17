@@ -1,12 +1,13 @@
-from app.llm.exceptions import LLMError, LLMRateLimitError, LLMTimeoutError
+"""Fallback-ответы на случай если YandexGPT недоступен"""
 
-async def handle_llm_error(error: LLMError) -> str:
-    """
-    Возвращает fallback-сообщение при ошибках LLM
-    """
-    if isinstance(error, LLMRateLimitError):
-        return "⏸️ Технический перерыв: слишком много запросов. Ваш вопрос уже записан, менеджер скоро свяжется с вами!"
-    elif isinstance(error, LLMTimeoutError):
-        return "⏸️ Технический перерыв: ответ занимает слишком много времени. Ваш вопрос записан, менеджер скоро свяжется!"
-    else:
-        return "⏸️ Технический перерыв: временно недоступен. Ваш вопрос записан, менеджер скоро свяжется с вами!"
+import random
+
+
+def get_fallback_response() -> str:
+    """Возвращает случайный fallback-ответ"""
+    responses = [
+        "️ Произошла техническая пауза. Пожалуйста, напишите ваш вопрос ещё раз — я уже на связи!",
+        "🔄 Секунду, обрабатываю запрос... Попробуйте переформулировать вопрос?",
+        "⚠️ Временные технические сложности. Я здесь и готов помочь! Напишите, что вас интересует?",
+    ]
+    return random.choice(responses)

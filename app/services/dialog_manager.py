@@ -1,99 +1,192 @@
-from app.db.repositories import UserRepository, DialogRepository, LeadRepository
 from app.llm.yandex_client import YandexGPTClient
-from app.llm.exceptions import LLMError
 from app.services.prompt_builder import PromptBuilder
-from app.services.fallback import handle_llm_error
 from app.services.lead_collector import LeadCollector
-from app.services.lead_sender import LeadSender
+from app.services.fallback import get_fallback_response
+from app.services.product_info import ProductInfoSearcher
 from app.niche.loader import load_niche
-from app.config import settings
+from app.db.repositories import UserRepository, DialogRepository, LeadRepository
 from loguru import logger
-from aiogram import Bot
+
 
 class DialogManager:
-    """Управляет диалогом: загружает контекст, вызывает LLM, сохраняет историю"""
+    """Управляет диалогом с пользователем"""
 
-    def __init__(self, bot: Bot):
-        self.llm_client = YandexGPTClient()
-        self.user_repo = UserRepository()
-        self.dialog_repo = DialogRepository()
+    def __init__(self, bot):
+        self.bot = bot
+        self.llm = YandexGPTClient()
         self.lead_collector = LeadCollector()
-        self.lead_sender = LeadSender(bot, settings.MANAGER_CHAT_ID)
+        self.product_searcher = ProductInfoSearcher()
 
     async def process_message(self, tg_user_id: int, user_message: str, niche_file: str) -> str:
-        """
-        Обрабатывает сообщение от пользователя
+        """Обрабатывает сообщение пользователя"""
 
-        Returns:
-            Ответ бота
-        """
+        # Загружаем конфигурацию ниши
+        niche_config = load_niche(niche_file)
+
+        # Получаем или создаём пользователя
+        user_repo = UserRepository()
+        user = await user_repo.get_or_create(tg_user_id)
+
+        # Получаем историю диалога
+        dialog_repo = DialogRepository()
+        history = await dialog_repo.get_recent_messages(user.id, limit=10)
+
+        # Сохраняем сообщение пользователя
+        await dialog_repo.save_message(user.id, "user", user_message)
+
+        # Проверяем, не просит ли пользователь подробные характеристики
+        if self._is_detailed_info_request(user_message):
+            # Извлекаем название товара
+            product_name = self._extract_product_name(user_message, history)
+            if product_name:
+                # Ищем подробную информацию
+                detailed_info = await self.product_searcher.search_product_info(product_name)
+                if detailed_info:
+                    bot_answer = detailed_info
+                else:
+                    bot_answer = await self._get_llm_response(user_message, history, niche_config)
+            else:
+                bot_answer = await self._get_llm_response(user_message, history, niche_config)
+        else:
+            # Обычный ответ через YandexGPT
+            bot_answer = await self._get_llm_response(user_message, history, niche_config)
+
+        # Сохраняем ответ бота
+        await dialog_repo.save_message(user.id, "assistant", bot_answer)
+
+        # Пытаемся собрать лид
         try:
-            # 1. Получаем или создаём пользователя
-            user = await self.user_repo.get_or_create(tg_user_id)
+            full_history = history + [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": bot_answer}
+            ]
 
-            # 2. Загружаем конфиг ниши
-            niche = load_niche(niche_file)
-
-            # 3. Загружаем историю диалога (последние N сообщений)
-            history = await self.dialog_repo.get_recent_messages(
-                user.id,
-                limit=settings.MAX_CONTEXT_MESSAGES
+            lead = await self.lead_collector.check_and_collect_lead(
+                user_id=user.id,
+                history=full_history
             )
 
-            # 4. Формируем промпт
-            system_prompt = PromptBuilder.build_system_prompt(niche)
-            messages = PromptBuilder.build_messages_for_llm(system_prompt, history, user_message)
-
-            # 5. Отправляем в YandexGPT
-            bot_response = await self.llm_client.chat(messages)
-
-            # 6. Сохраняем сообщение пользователя и ответ бота в БД
-            await self.dialog_repo.save_message(user.id, "user", user_message)
-            await self.dialog_repo.save_message(user.id, "assistant", bot_response)
-
-            # 7. Проверяем, собран ли лид
-            updated_history = history + [
-                {"role": "user", "content": user_message},
-                {"role": "assistant", "content": bot_response}
-            ]
-            lead = await self.lead_collector.check_and_collect_lead(user.id, updated_history)
-
-            # 8. Если лид собран — отправляем менеджеру
             if lead and not lead.sent_to_manager:
-                # Формируем резюме диалога
-                dialog_summary = self._create_dialog_summary(updated_history)
-                await self.lead_sender.send_lead(lead, dialog_summary)
-
-                # Отмечаем лид как отправленный
-                await self.lead_collector.lead_repo.update(lead.id, sent_to_manager=True)
-
-                logger.info(f"Лид {lead.id} отправлен менеджеру")
-
-            return bot_response
-
-        except LLMError as e:
-            logger.error(f"Ошибка LLM для пользователя {tg_user_id}: {e}")
-            # Сохраняем сообщение пользователя даже если LLM упал
-            try:
-                user = await self.user_repo.get_or_create(tg_user_id)
-                await self.dialog_repo.save_message(user.id, "user", user_message)
-            except Exception as db_err:
-                logger.error(f"Не удалось сохранить сообщение: {db_err}")
-
-            return await handle_llm_error(e)
+                await self._send_lead_to_manager(lead, niche_config)
+                lead_repo = LeadRepository()
+                await lead_repo.update(lead.id, sent_to_manager=True)
+                logger.info(f"Лид отправлен менеджеру: {lead}")
 
         except Exception as e:
-            logger.error(f"Неожиданная ошибка в DialogManager: {e}")
-            return "⚠️ Произошла ошибка. Попробуйте ещё раз или напишите позже."
+            logger.error(f"Ошибка обработки лида: {e}")
 
-    def _create_dialog_summary(self, history: list[dict]) -> str:
-        """Создаёт краткое резюме диалога для менеджера"""
-        # Берём последние 6 сообщений для резюме
-        recent = history[-6:] if len(history) > 6 else history
+        return bot_answer
 
-        summary_parts = []
-        for msg in recent:
-            role = "Клиент" if msg["role"] == "user" else "Бот"
-            summary_parts.append(f"{role}: {msg['content']}")
+    async def _get_llm_response(self, user_message: str, history: list, niche_config) -> str:
+        """Получает ответ от YandexGPT"""
+        prompt_builder = PromptBuilder(niche_config)
+        system_prompt = prompt_builder.build_system_prompt()
 
-        return "\n".join(summary_parts)
+        history_text = self._format_history(history)
+        full_prompt = f"""ИСТОРИЯ ДИАЛОГА:
+{history_text}
+
+СООБЩЕНИЕ КЛИЕНТА:
+{user_message}
+
+Ответь клиенту естественно, как живой менеджер."""
+
+        try:
+            bot_answer = await self.llm.generate(
+                prompt=full_prompt,
+                system_prompt=system_prompt,
+                temperature=0.7,
+                max_tokens=1000
+            )
+
+            if not bot_answer:
+                logger.warning("YandexGPT не ответил, используем fallback")
+                bot_answer = get_fallback_response()
+
+        except Exception as e:
+            logger.error(f"Ошибка YandexGPT: {e}")
+            bot_answer = get_fallback_response()
+
+        return bot_answer
+
+    def _is_detailed_info_request(self, message: str) -> bool:
+        """Проверяет, просит ли пользователь подробную информацию"""
+        keywords = [
+            "подробные характеристики",
+            "детальные характеристики",
+            "полные характеристики",
+            "все характеристики",
+            "технические характеристики",
+            "specs",
+            "specifications",
+            "подробно о",
+            "детально о",
+            "расскажи всё о",
+            "подробная информация"
+        ]
+
+        message_lower = message.lower()
+        return any(keyword in message_lower for keyword in keywords)
+
+    def _extract_product_name(self, message: str, history: list) -> str:
+        """Извлекает название товара из сообщения"""
+        # Убираем служебные слова
+        ignore_words = [
+            "покажи", "найди", "расскажи", "характеристики",
+            "подробные", "детальные", "полные", "информацию",
+            "о", "об", "на", "товар", "продукт"
+        ]
+
+        # Простая эвристика - берем последние слова
+        words = message.split()
+        product_words = [w for w in words if w.lower() not in ignore_words]
+
+        if product_words:
+            return " ".join(product_words[-4:])  # Берем последние 4 слова
+
+        # Если не получилось - смотрим историю
+        for msg in reversed(history):
+            if msg["role"] == "user":
+                return msg["content"][:50]
+
+        return ""
+
+    def _format_history(self, history: list) -> str:
+        """Форматирует историю диалога в текст"""
+        if not history:
+            return "(диалог только начался)"
+
+        lines = []
+        for msg in history:
+            role = "Клиент" if msg["role"] == "user" else "Менеджер"
+            lines.append(f"{role}: {msg['content']}")
+
+        return "\n".join(lines)
+
+    async def _send_lead_to_manager(self, lead, niche_config):
+        """Отправляет лид менеджеру"""
+        from app.config import settings
+
+        manager_id = settings.MANAGER_CHAT_ID
+        if not manager_id:
+            logger.warning("MANAGER_CHAT_ID не указан, лид не отправлен")
+            return
+
+        text = f"🔥 <b>НОВЫЙ ЛИД!</b>\n\n"
+        text += f"📋 <b>Ниша:</b> {niche_config.business_name}\n\n"
+        text += "<b>Данные клиента:</b>\n"
+
+        if lead.name:
+            text += f"• Имя: {lead.name}\n"
+        if lead.contact:
+            text += f"• Контакт: {lead.contact}\n"
+        if lead.interest:
+            text += f"• Интерес: {lead.interest}\n"
+        if lead.budget:
+            text += f"• Бюджет: {lead.budget}\n"
+
+        try:
+            await self.bot.send_message(manager_id, text, parse_mode="HTML")
+            logger.info(f"Лид отправлен менеджеру {manager_id}")
+        except Exception as e:
+            logger.error(f"Не удалось отправить лид менеджеру: {e}")
