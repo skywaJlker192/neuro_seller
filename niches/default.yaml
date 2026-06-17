@@ -1,0 +1,9 @@
+business_name: "TechStore"
+product_description: "Продажа ноутбуков, компьютеров и смартфонов. Работаем с брендами Apple, Samsung, Dell."
+tone: "friendly"
+fields_to_collect:
+  - name
+  - interest
+  - budget
+  - contact
+manager_instructions: ""

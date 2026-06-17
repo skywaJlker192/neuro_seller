@@ -1,0 +1,13 @@
+business_name: "TechStore"
+product_description: "Продажа ноутбуков, компьютеров, смартфонов и аксессуаров. Работаем с ведущими брендами: Apple, Samsung, Dell, HP, Lenovo. Предоставляем гарантию, рассрочку, доставку по городу."
+tone: "friendly"
+fields_to_collect:
+  - name
+  - interest
+  - budget
+  - contact
+manager_instructions: |
+  Особые условия:
+  - Рассрочка 0% на 6 месяцев
+  - Бесплатная доставка при заказе от 50 000 ₽
+  - Расширенная гарантия +2 года
