@@ -3,6 +3,8 @@ from app.db.database import async_session
 from sqlalchemy import select
 from app.db.models import Lead
 from loguru import logger
+import re
+
 
 class LeadCollector:
     """Анализирует диалог и собирает информацию о клиенте"""
@@ -13,62 +15,51 @@ class LeadCollector:
     async def check_and_collect_lead(self, user_id: int, history: list[dict]) -> Lead | None:
         """
         Проверяет, собрана ли вся необходимая информация о клиенте
-
-        Args:
-            user_id: ID пользователя в БД
-            history: История диалога
-
-        Returns:
-            Lead объект если лид собран, иначе None
+        В MVP — достаточно хотя бы одного из: имя, контакт, интерес
         """
-        # Проверяем, есть ли уже лид для этого пользователя
+        # Получаем или создаём лид
         existing_lead = await self.lead_repo.get_by_user_id(user_id)
 
         if existing_lead and existing_lead.sent_to_manager:
-            # Лид уже отправлен менеджеру, не собираем повторно
             return None
 
-        # Анализируем историю диалога для извлечения информации
-        lead_data = await self._extract_lead_info(history)
+        # Извлекаем данные из истории
+        lead_data = self._extract_basic_info(history)
 
-        if lead_data and self._is_lead_complete(lead_data):
-            # Сохраняем или обновляем лид
+        # Если есть хотя бы один важный параметр — сохраняем
+        if lead_data.get("interest") or lead_data.get("contact") or lead_data.get("name"):
             if existing_lead:
                 lead = await self.lead_repo.update(existing_lead.id, **lead_data)
             else:
                 lead = await self.lead_repo.create(user_id=user_id, **lead_data)
 
-            logger.info(f"Лид собран для пользователя {user_id}: {lead}")
+            logger.info(f"Лид частично собран для пользователя {user_id}: {lead_data}")
             return lead
 
         return None
 
-    async def _extract_lead_info(self, history: list[dict]) -> dict | None:
-        """
-        Извлекает информацию о лиде из истории диалога
-        В MVP используем простую логику, в будущем можно подключить LLM для парсинга
-        """
+    def _extract_basic_info(self, history: list[dict]) -> dict:
+        """Извлекает базовую информацию из истории"""
+        lead_data = {}
+
         # Собираем все сообщения пользователя
         user_messages = [msg["content"] for msg in history if msg["role"] == "user"]
 
         if not user_messages:
-            return None
+            return lead_data
 
-        # Простой парсинг (в будущем можно улучшить с помощью LLM)
-        lead_data = {}
-
-        # Ищем имя (простая эвристика)
+        # Ищем интерес (что хочет купить)
+        interest_keywords = ["хочу купить", "интересует", "ищу", "нужен", "покупаю"]
         for msg in user_messages:
             msg_lower = msg.lower()
-            if "меня зовут" in msg_lower or "мое имя" in msg_lower:
-                # Извлекаем имя после ключевых слов
-                parts = msg.split()
-                for i, part in enumerate(parts):
-                    if part.lower() in ["зовут", "имя"] and i + 1 < len(parts):
-                        lead_data["name"] = parts[i + 1].capitalize()
-                        break
+            for kw in interest_keywords:
+                if kw in msg_lower:
+                    lead_data["interest"] = msg.strip()
+                    break
+            if lead_data.get("interest"):
+                break
 
-        # Ищем контакт (телефон или email)
+        # Ищем контакт (телефон/email)
         import re
         for msg in user_messages:
             # Телефон
@@ -83,9 +74,13 @@ class LeadCollector:
                 lead_data["contact"] = email_match.group(0)
                 break
 
-        return lead_data if lead_data else None
+        # Ищем имя (простая эвристика)
+        for msg in user_messages:
+            if "меня зовут" in msg.lower() or "мое имя" in msg.lower():
+                parts = msg.split()
+                for i, part in enumerate(parts):
+                    if part.lower() in ["зовут", "имя"] and i + 1 < len(parts):
+                        lead_data["name"] = parts[i + 1].capitalize()
+                        break
 
-    def _is_lead_complete(self, lead_data: dict) -> bool:
-        """Проверяет, собрана ли вся необходимая информация"""
-        required_fields = ["name", "contact"]
-        return all(field in lead_data for field in required_fields)
+        return lead_data

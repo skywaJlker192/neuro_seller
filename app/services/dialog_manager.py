@@ -3,6 +3,7 @@ from app.services.prompt_builder import PromptBuilder
 from app.services.lead_collector import LeadCollector
 from app.services.fallback import get_fallback_response
 from app.services.product_info import ProductInfoSearcher
+from app.services.google_sheets import sheets_exporter
 from app.niche.loader import load_niche
 from app.db.repositories import UserRepository, DialogRepository, LeadRepository
 from loguru import logger
@@ -36,10 +37,8 @@ class DialogManager:
 
         # Проверяем, не просит ли пользователь подробные характеристики
         if self._is_detailed_info_request(user_message):
-            # Извлекаем название товара
             product_name = self._extract_product_name(user_message, history)
             if product_name:
-                # Ищем подробную информацию
                 detailed_info = await self.product_searcher.search_product_info(product_name)
                 if detailed_info:
                     bot_answer = detailed_info
@@ -48,7 +47,6 @@ class DialogManager:
             else:
                 bot_answer = await self._get_llm_response(user_message, history, niche_config)
         else:
-            # Обычный ответ через YandexGPT
             bot_answer = await self._get_llm_response(user_message, history, niche_config)
 
         # Сохраняем ответ бота
@@ -68,9 +66,20 @@ class DialogManager:
 
             if lead and not lead.sent_to_manager:
                 await self._send_lead_to_manager(lead, niche_config)
+
+                # Экспорт в Google Sheets
+                lead_data = {
+                    "tg_user_id": user.tg_id,
+                    "name": lead.name,
+                    "interest": lead.interest,
+                    "budget": lead.budget,
+                    "contact": lead.contact
+                }
+                await sheets_exporter.add_lead(lead_data, niche_config.business_name, sent_to_manager=True)
+
                 lead_repo = LeadRepository()
                 await lead_repo.update(lead.id, sent_to_manager=True)
-                logger.info(f"Лид отправлен менеджеру: {lead}")
+                logger.info(f"Лид отправлен менеджеру и добавлен в Google Sheets: {lead}")
 
         except Exception as e:
             logger.error(f"Ошибка обработки лида: {e}")
@@ -130,21 +139,18 @@ class DialogManager:
 
     def _extract_product_name(self, message: str, history: list) -> str:
         """Извлекает название товара из сообщения"""
-        # Убираем служебные слова
         ignore_words = [
             "покажи", "найди", "расскажи", "характеристики",
             "подробные", "детальные", "полные", "информацию",
             "о", "об", "на", "товар", "продукт"
         ]
 
-        # Простая эвристика - берем последние слова
         words = message.split()
         product_words = [w for w in words if w.lower() not in ignore_words]
 
         if product_words:
-            return " ".join(product_words[-4:])  # Берем последние 4 слова
+            return " ".join(product_words[-4:])
 
-        # Если не получилось - смотрим историю
         for msg in reversed(history):
             if msg["role"] == "user":
                 return msg["content"][:50]

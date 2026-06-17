@@ -10,8 +10,10 @@ from loguru import logger
 
 from app.config import settings
 from app.db.database import init_db
-from app.handlers import start, messages, media
-
+from app.handlers import start
+from app.handlers import messages
+from app.handlers import media
+from app.handlers import admin
 logger.remove()
 logger.add(
     sys.stdout,
@@ -34,7 +36,7 @@ async def main():
     )
 
     dp = Dispatcher()
-    dp.include_routers(start.router, messages.router, media.router)
+    dp.include_routers(start.router, messages.router, media.router, admin.router)
 
     logger.info("✅ Бот запущен через публичный прокси!")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
