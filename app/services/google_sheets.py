@@ -76,8 +76,12 @@ class GoogleSheetsExporter:
 
     async def add_lead(self, lead_data: dict, niche: str, sent_to_manager: bool = False):
         """Добавляет лид в таблицу"""
+        logger.info(f"📊 Попытка добавить лид в Google Sheets: {lead_data}")
+
         if not self.worksheet:
+            logger.warning("Worksheet не подключен, пытаюсь подключиться...")
             if not self.connect():
+                logger.error("Не удалось подключиться к Google Sheets")
                 return False
 
         try:
@@ -92,20 +96,23 @@ class GoogleSheetsExporter:
                 now.strftime("%Y-%m-%d"),
                 now.strftime("%H:%M:%S"),
                 str(lead_data.get("tg_user_id", "")),
-                str(lead_data.get("name", "")),
-                str(lead_data.get("interest", "")),
-                str(lead_data.get("budget", "")),
-                str(lead_data.get("contact", "")),
+                str(lead_data.get("name", "") or ""),
+                str(lead_data.get("interest", "") or ""),
+                str(lead_data.get("budget", "") or ""),
+                str(lead_data.get("contact", "") or ""),
                 str(niche),
                 "Да" if sent_to_manager else "Нет"
             ]
 
+            logger.info(f"Добавляю строку в таблицу: {row}")
             self.worksheet.append_row(row)
-            logger.info(f"Лид добавлен в Google Sheets: {lead_data.get('name')}")
+            logger.success(f"✅ Лид добавлен в Google Sheets: {lead_data.get('name')}")
             return True
 
         except Exception as e:
-            logger.error(f"Ошибка добавления лида в таблицу: {e}")
+            logger.error(f"❌ Ошибка добавления лида в таблицу: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
 
     async def get_leads_csv(self, days: int = None) -> str:
@@ -159,6 +166,7 @@ class GoogleSheetsExporter:
             # Объединяем с переносами строк
             csv_string = '\n'.join(csv_lines)
 
+            logger.info(f"CSV экспортирован: {len(data_rows)} записей")
             return csv_string
 
         except Exception as e:

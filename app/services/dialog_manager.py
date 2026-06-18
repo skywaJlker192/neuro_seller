@@ -65,9 +65,12 @@ class DialogManager:
             )
 
             if lead and not lead.sent_to_manager:
+                logger.info(f"🔥 НОВЫЙ ЛИД: {lead}")
+
+                # Отправляем лид менеджеру в Telegram
                 await self._send_lead_to_manager(lead, niche_config)
 
-                # Экспорт в Google Sheets
+                # ЭКСПОРТ В GOOGLE SHEETS
                 lead_data = {
                     "tg_user_id": user.tg_id,
                     "name": lead.name,
@@ -75,14 +78,29 @@ class DialogManager:
                     "budget": lead.budget,
                     "contact": lead.contact
                 }
-                await sheets_exporter.add_lead(lead_data, niche_config.business_name, sent_to_manager=True)
 
+                logger.info(f"📊 Экспорт в Google Sheets: {lead_data}")
+                export_result = await sheets_exporter.add_lead(
+                    lead_data,
+                    niche_config.business_name,
+                    sent_to_manager=True
+                )
+
+                if export_result:
+                    logger.success("✅ Лид добавлен в Google Sheets")
+                else:
+                    logger.error("❌ Ошибка экспорта в Google Sheets")
+
+                # Обновляем статус лида
                 lead_repo = LeadRepository()
                 await lead_repo.update(lead.id, sent_to_manager=True)
+
                 logger.info(f"Лид отправлен менеджеру и добавлен в Google Sheets: {lead}")
 
         except Exception as e:
             logger.error(f"Ошибка обработки лида: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
         return bot_answer
 
