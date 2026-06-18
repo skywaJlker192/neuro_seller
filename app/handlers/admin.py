@@ -27,7 +27,7 @@ async def export_all_leads(message: Message):
         await message.answer("❌ Нет доступа. Эта команда только для админов.")
         return
 
-    await message.answer(" Генерирую CSV файл...")
+    await message.answer("📊 Генерирую CSV файл...")
 
     csv_data = await sheets_exporter.get_leads_csv()
 
@@ -35,7 +35,8 @@ async def export_all_leads(message: Message):
         await message.answer(f"❌ {csv_data}")
         return
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8') as f:
+    # Создаём файл с UTF-8 BOM для Excel
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding='utf-8-sig') as f:
         f.write(csv_data)
         temp_file = f.name
 

@@ -35,11 +35,24 @@ class GoogleSheetsExporter:
 
             self.client = gspread.authorize(creds)
 
-            # Пробуем открыть существующую таблицу или создаём новую
+            # Пробуем открыть существующую таблицу
             try:
                 self.spreadsheet = self.client.open(self.spreadsheet_name)
                 self.worksheet = self.spreadsheet.sheet1
+
+                # Проверяем, есть ли заголовки
+                first_row = self.worksheet.row_values(1)
+                if not first_row or not first_row[0]:
+                    # Заголовков нет - добавляем
+                    headers = [
+                        "ID", "Дата", "Время", "Telegram ID", "Имя",
+                        "Интерес", "Бюджет", "Контакт", "Ниша",
+                        "Отправлено менеджеру"
+                    ]
+                    self.worksheet.append_row(headers)
+
                 logger.info(f"Подключен к таблице: {self.spreadsheet_name}")
+
             except gspread.SpreadsheetNotFound:
                 # Создаём новую таблицу
                 self.spreadsheet = self.client.create(self.spreadsheet_name)
@@ -52,9 +65,6 @@ class GoogleSheetsExporter:
                     "Отправлено менеджеру"
                 ]
                 self.worksheet.append_row(headers)
-
-                # Делимся таблицей с админом (опционально)
-                # self.spreadsheet.share(settings.ADMIN_EMAIL, perm_type='user', role='writer')
 
                 logger.info(f"Создана новая таблица: {self.spreadsheet_name}")
 
@@ -81,12 +91,12 @@ class GoogleSheetsExporter:
                 next_id,
                 now.strftime("%Y-%m-%d"),
                 now.strftime("%H:%M:%S"),
-                lead_data.get("tg_user_id", ""),
-                lead_data.get("name", ""),
-                lead_data.get("interest", ""),
-                lead_data.get("budget", ""),
-                lead_data.get("contact", ""),
-                niche,
+                str(lead_data.get("tg_user_id", "")),
+                str(lead_data.get("name", "")),
+                str(lead_data.get("interest", "")),
+                str(lead_data.get("budget", "")),
+                str(lead_data.get("contact", "")),
+                str(niche),
                 "Да" if sent_to_manager else "Нет"
             ]
 
@@ -99,33 +109,55 @@ class GoogleSheetsExporter:
             return False
 
     async def get_leads_csv(self, days: int = None) -> str:
-        """Получает лиды в формате CSV"""
+        """Получает лиды в формате CSV (Excel-compatible)"""
         if not self.connect():
             return "Ошибка подключения к Google Sheets"
 
         try:
-            # Получаем все данные
-            all_rows = self.worksheet.get_all_records()
+            # Получаем все значения
+            all_values = self.worksheet.get_all_values()
 
-            if not all_rows:
+            if not all_values:
                 return "Нет данных"
 
-            # Фильтруем по дате если нужно
-            if days:
-                cutoff_date = datetime.now() - timedelta(days=days)
-                filtered_rows = []
-                for row in all_rows:
-                    try:
-                        row_date = datetime.strptime(row["Дата"], "%Y-%m-%d")
-                        if row_date >= cutoff_date:
-                            filtered_rows.append(row)
-                    except:
-                        filtered_rows.append(row)
-                all_rows = filtered_rows
+            # Берем заголовок из первой строки
+            headers = all_values[0]
 
-            # Конвертируем в DataFrame и затем в CSV
-            df = pd.DataFrame(all_rows)
-            csv_string = df.to_csv(index=False, sep=";")
+            # Остальные строки - данные
+            data_rows = all_values[1:]
+
+            # Фильтруем по дате если нужно
+            if days and data_rows:
+                cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+                filtered_rows = []
+                for row in data_rows:
+                    if len(row) > 1 and row[1] and row[1] >= cutoff_date:
+                        filtered_rows.append(row)
+                data_rows = filtered_rows
+
+            # Создаём CSV с запятыми (стандарт для Excel)
+            csv_lines = []
+
+            # Заголовки
+            csv_lines.append("ID,Дата,Время,Telegram ID,Имя,Интерес,Бюджет,Контакт,Ниша,Отправлено менеджеру")
+
+            # Данные
+            for row in data_rows:
+                # Дополняем до 10 колонок
+                while len(row) < 10:
+                    row.append('')
+
+                # Очищаем данные: убираем переносы строк и кавычки
+                cleaned_row = []
+                for cell in row[:10]:
+                    cell_str = str(cell).replace('\n', ' ').replace('\r', '')
+                    cell_str = cell_str.replace('"', "'")  # Заменяем кавычки
+                    cleaned_row.append(cell_str)
+
+                csv_lines.append(','.join(cleaned_row))
+
+            # Объединяем с переносами строк
+            csv_string = '\n'.join(csv_lines)
 
             return csv_string
 

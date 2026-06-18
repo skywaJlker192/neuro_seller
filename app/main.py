@@ -4,45 +4,91 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from loguru import logger
 
-from app.config import settings
-from app.db.database import init_db
+# Явно импортируем каждый модуль
 from app.handlers import start
 from app.handlers import messages
 from app.handlers import media
 from app.handlers import admin
-logger.remove()
-logger.add(
-    sys.stdout,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-    level="INFO"
-)
+
+from app.config import settings
+from app.db.database import init_db
+
+
+# Рабочие прокси (попробуй по очереди если один не работает):
+PROXY_URLS = [
+    "http://4.221.164.109:443",
+    "http://34.122.187.196:80",
+    "http://152.32.132.190:7890",
+    "http://139.99.237.62:80",
+]
+
 
 async def main():
-    logger.info("Запуск бота...")
+    # Инициализация базы данных
     await init_db()
     logger.info("База данных инициализирована")
 
-    proxy_server = TelegramAPIServer.from_base("https://bot.qninq.cn")
-    session = AiohttpSession(api=proxy_server)
+    # Пробуем прокси по очереди
+    working_session = None
+    working_proxy = None
 
+    logger.info("Проверка прокси...")
+
+    for proxy_url in PROXY_URLS:
+        try:
+            # Создаем сессию с прокси
+            session = AiohttpSession(proxy=proxy_url)
+
+            # Создаем бота
+            bot = Bot(
+                token=settings.BOT_TOKEN,
+                session=session,
+                default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+            )
+
+            # Проверяем соединение
+            await bot.me()
+
+            working_session = session
+            working_proxy = proxy_url
+            logger.success(f"✅ Прокси работает: {proxy_url}")
+            break
+
+        except Exception as e:
+            logger.warning(f"❌ Прокси не работает {proxy_url}: {type(e).__name__}")
+            continue
+
+    if not working_session:
+        logger.error("❌ Ни один прокси не работает! Попробуйте позже или используйте VPN")
+        sys.exit(1)
+
+    # Создаем бота с рабочим прокси
     bot = Bot(
         token=settings.BOT_TOKEN,
-        session=session,
+        session=working_session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
 
+    # Создаем диспетчер
     dp = Dispatcher()
-    dp.include_routers(admin.router, start.router, messages.router, media.router)
 
-    logger.info("✅ Бот запущен через публичный прокси!")
+    # Подключаем роутеры (admin первым!)
+    dp.include_routers(
+        admin.router,      # Админские команды
+        start.router,      # /start
+        messages.router,   # Текстовые сообщения
+        media.router,      # Медиа
+    )
+
+    logger.info("✅ Бот запущен через прокси!")
+    logger.info(f"🌐 Прокси: {working_proxy}")
+
+    # Запускаем polling
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
+
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем")
+    asyncio.run(main())
