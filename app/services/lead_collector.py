@@ -76,7 +76,18 @@ class LeadCollector:
                 # Проверяем последний лид - если в нём есть интерес, но нет контакта
                 # И сейчас пришёл контакт - обновляем последний лид
                 last_lead = all_user_leads[-1]
-                if last_lead.interest and not last_lead.contact and lead_data.get("contact"):
+
+                # Проверяем, не менялся ли интерес
+                last_interest = (last_lead.interest or "").lower()
+                if current_interest and last_interest and current_interest != last_interest:
+                    # ИНТЕРЕС ИЗМЕНИЛСЯ - создаём НОВЫЙ лид
+                    logger.info(f"Новый интерес '{current_interest}' отличается от '{last_interest}' - создаю новый лид")
+                    logger.info(f"Создаём НОВЫЙ лид для user_id={user_id}")
+                    lead = await self.lead_repo.create(user_id=user_id, **lead_data)
+                    logger.success(f"✅ Новый лид создан: {lead}")
+                    return lead
+
+                elif last_lead.interest and not last_lead.contact and lead_data.get("contact"):
                     logger.info(f"Добавляем контакт к последнему лиду {last_lead.id}")
                     lead = await self.lead_repo.update(last_lead.id, contact=lead_data["contact"])
                     logger.success(f"✅ Контакт добавлен к лиду: {lead}")
@@ -116,21 +127,50 @@ class LeadCollector:
         if not user_messages:
             return lead_data
 
-        # Ищем интерес (что хочет купить)
-        interest_keywords = ["хочу купить", "купить", "заказать", "интересует", "ищу", "нужен", "покупаю"]
-        for msg in user_messages:
-            msg_lower = msg.lower()
-            for kw in interest_keywords:
-                if kw in msg_lower:
-                    parts = msg.split(kw, 1)
-                    if len(parts) > 1:
-                        lead_data["interest"] = f"{kw} {parts[1].strip()}"
-                    else:
-                        lead_data["interest"] = msg.strip()
-                    logger.info(f"Найден интерес: {lead_data['interest']}")
-                    break
-            if lead_data.get("interest"):
+        # Ищем интерес (что хочет купить) - РАСШИРЕННЫЙ СПИСОК
+        interest_keywords = [
+            "хочу купить", "купить", "заказать", "интересует", "ищу", "нужен", "покупаю",
+            "нужна", "нужно", "хочу", "интересно", "расскажите про", "покажи", "дайте"
+        ]
+
+        # Последнее сообщение пользователя
+        last_msg = user_messages[-1].lower()
+
+        # Проверяем последнее сообщение на наличие интереса
+        for kw in interest_keywords:
+            if kw in last_msg:
+                parts = user_messages[-1].split(kw, 1)
+                if len(parts) > 1:
+                    lead_data["interest"] = f"{kw} {parts[1].strip()}"
+                else:
+                    lead_data["interest"] = user_messages[-1].strip()
+                logger.info(f"Найден интерес: {lead_data['interest']}")
                 break
+
+        # Если не нашли с ключевыми словами - проверяем, не товар ли это
+        if not lead_data.get("interest"):
+            # Проверяем, не похоже ли сообщение на название товара
+            product_patterns = [
+                r'парфюм\s+\w+',
+                r'крем\s+\w+',
+                r'шампунь\s+\w+',
+                r'косметика',
+                r'\w+\s+набор',
+                r'книга\s+.+',
+                r'iphone\s*\d*',
+                r'macbook',
+                r'airpods',
+                r'диван',
+                r'кроссовки',
+                r'ноутбук',
+                r'телефон',
+            ]
+
+            for pattern in product_patterns:
+                if re.search(pattern, last_msg, re.IGNORECASE):
+                    lead_data["interest"] = user_messages[-1].strip()
+                    logger.info(f"Найден товар по паттерну: {lead_data['interest']}")
+                    break
 
         # Ищем телефон (несколько форматов)
         phone_patterns = [
