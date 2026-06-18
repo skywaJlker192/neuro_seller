@@ -7,14 +7,14 @@ import re
 
 
 class LeadCollector:
-    """Анализирует диалог и собирает информацию о клиенте"""
+    """УНИВЕРСАЛЬНЫЙ сборщик лидов для любой ниши (товары + услуги)"""
 
     def __init__(self):
         self.lead_repo = LeadRepository()
 
     async def check_and_collect_lead(self, user_id: int, history: list[dict]) -> Lead | None:
         """
-        Проверяет, собрана ли вся необходимая информация о клиенте
+        Проверяет и собирает лид для ЛЮБОЙ ниши
         """
         logger.info(f"🔍 Проверка лида для пользователя {user_id}")
         logger.info(f"История диалога: {len(history)} сообщений")
@@ -36,22 +36,20 @@ class LeadCollector:
         # Получаем все лиды пользователя
         all_user_leads = await self._get_all_user_leads(user_id)
 
-        # ПРОВЕРКА 1: Если пользователь даёт контакт/бюджет И есть лид без этих данных → обновляем
+        # ПРОВЕРКА 1: Если пользователь даёт контакт/данные И есть лид без этих данных → обновляем
         if all_user_leads:
             last_lead = all_user_leads[-1]
             update_data = {}
 
-            # Если у лида нет контакта и пользователь дал контакт
+            # Проверяем каждое поле лида
             if not last_lead.contact and lead_data.get("contact"):
                 update_data["contact"] = lead_data["contact"]
                 logger.info(f"Добавляем контакт к лиду {last_lead.id}")
 
-            # Если у лида нет бюджета и пользователь дал бюджет
             if not last_lead.budget and lead_data.get("budget"):
                 update_data["budget"] = lead_data["budget"]
                 logger.info(f"Добавляем бюджет к лиду {last_lead.id}")
 
-            # Если у лида нет имени и пользователь дал имя
             if not last_lead.name and lead_data.get("name"):
                 update_data["name"] = lead_data["name"]
                 logger.info(f"Добавляем имя к лиду {last_lead.id}")
@@ -62,9 +60,9 @@ class LeadCollector:
                 logger.success(f"✅ Лид обновлён: {lead}")
                 return lead
 
-        # ПРОВЕРКА 2: Проверяем намерение купить (только если нет лида для обновления)
-        if not self._has_buying_intent_in_message(last_message):
-            logger.info("❌ Нет намерения купить в последнем сообщении - не создаю лид")
+        # ПРОВЕРКА 2: Проверяем намерение (только если нет лида для обновления)
+        if not self._has_intent_in_message(last_message):
+            logger.info("❌ Нет намерения - не создаю лид")
             return None
 
         # Проверяем есть ли данные
@@ -82,24 +80,20 @@ class LeadCollector:
                 existing_lead_with_same_interest = lead
                 break
 
-        # Если есть хотя бы один важный параметр — сохраняем/обновляем
+        # Если есть данные — сохраняем/обновляем
         if lead_data.get("interest") or lead_data.get("contact") or lead_data.get("name"):
             logger.info(f"✅ Есть данные для лида: {lead_data}")
 
             if existing_lead_with_same_interest:
-                # Обновляем СУЩЕСТВУЮЩИЙ лид с таким интересом
                 lead = existing_lead_with_same_interest
                 update_data = {}
 
                 if not lead.interest and lead_data.get("interest"):
                     update_data["interest"] = lead_data["interest"]
-
                 if not lead.contact and lead_data.get("contact"):
                     update_data["contact"] = lead_data["contact"]
-
                 if not lead.name and lead_data.get("name"):
                     update_data["name"] = lead_data["name"]
-
                 if not lead.budget and lead_data.get("budget"):
                     update_data["budget"] = lead_data["budget"]
 
@@ -113,26 +107,19 @@ class LeadCollector:
                     return lead
 
             elif all_user_leads:
-                # Проверяем последний лид
                 last_lead = all_user_leads[-1]
-
-                # Проверяем, не менялся ли интерес
                 last_interest = (last_lead.interest or "").lower()
+
                 if current_interest and last_interest and current_interest != last_interest:
-                    # ИНТЕРЕС ИЗМЕНИЛСЯ - создаём НОВЫЙ лид
-                    logger.info(f"Новый интерес '{current_interest}' отличается от '{last_interest}' - создаю новый лид")
-                    logger.info(f"Создаём НОВЫЙ лид для user_id={user_id}")
+                    logger.info(f"Новый интерес '{current_interest}' - создаю новый лид")
                     lead = await self.lead_repo.create(user_id=user_id, **lead_data)
                     logger.success(f"✅ Новый лид создан: {lead}")
                     return lead
                 else:
-                    # Создаём НОВЫЙ лид для нового интереса
-                    logger.info(f"Создаём НОВЫЙ лид для user_id={user_id}")
                     lead = await self.lead_repo.create(user_id=user_id, **lead_data)
                     logger.success(f"✅ Новый лид создан: {lead}")
                     return lead
             else:
-                # Первый лид пользователя
                 logger.info(f"Создаём ПЕРВЫЙ лид для user_id={user_id}")
                 lead = await self.lead_repo.create(user_id=user_id, **lead_data)
                 logger.success(f"✅ Первый лид создан: {lead}")
@@ -141,9 +128,9 @@ class LeadCollector:
         logger.warning("❌ Нет данных для сохранения лида")
         return None
 
-    def _has_buying_intent_in_message(self, message: str) -> bool:
+    def _has_intent_in_message(self, message: str) -> bool:
         """
-        Проверяет, есть ли намерение купить в СООБЩЕНИИ
+        УНИВЕРСАЛЬНАЯ проверка намерения (товары + услуги)
         """
         msg_lower = message.lower().strip()
 
@@ -161,88 +148,90 @@ class LeadCollector:
                 logger.info(f"Навигационная команда '{keyword}' - не создаю лид")
                 return False
 
-        # Проверяем есть ли намерение купить
-        buying_keywords = [
-            "хочу купить", "купить", "заказать", "интересует", "ищу",
-            "нужен", "нужна", "нужно", "покупаю", "хочу",
+        # Универсальные ключевые слова намерения (товары + услуги)
+        intent_keywords = [
+            # Покупка товаров
+            "хочу купить", "купить", "заказать", "покупаю",
+            # Запись на услуги
+            "хочу записаться", "записаться", "запись", "забронировать",
+            # Общие
+            "интересует", "ищу", "нужен", "нужна", "нужно", "хочу",
             "расскажите про", "покажи", "дайте", "цена", "сколько стоит",
-            "стоимость", "характеристики"
+            "стоимость", "характеристики", "подробнее"
         ]
 
-        # Проверяем сообщение
-        for keyword in buying_keywords:
+        # Проверяем сообщение - должно быть ключевое слово + что-то ещё
+        for keyword in intent_keywords:
             if keyword in msg_lower:
-                logger.info(f"Найдено намерение купить: '{keyword}'")
-                return True
+                parts = msg_lower.split(keyword, 1)
+                if len(parts) > 1 and parts[1].strip():
+                    remaining_text = parts[1].strip()
+                    # Проверяем что это не просто номер телефона
+                    if not re.match(r'^[\d\s\+\-]+$', remaining_text):
+                        logger.info(f"Найдено намерение: '{keyword}'")
+                        return True
 
-        # Проверяем на наличие конкретных товаров
+        # Проверяем на наличие конкретных товаров/услуг
         product_patterns = [
-            r'парфюм\s+\w+',
-            r'крем\s+\w+',
-            r'шампунь\s+\w+',
-            r'косметика',
-            r'\w+\s+набор',
-            r'книга\s+.+',
-            r'iphone\s*\d*',
-            r'macbook',
-            r'airpods',
-            r'диван',
-            r'кроссовки',
-            r'ноутбук',
-            r'телефон',
+            r'парфюм\s+\w+', r'крем\s+\w+', r'шампунь\s+\w+',
+            r'косметика', r'\w+\s+набор', r'книга\s+.+',
+            r'iphone\s*\d*', r'айфон\s*\d*', r'macbook', r'airpods',
+            r'диван', r'кроссовки', r'ноутбук', r'телефон',
+            r'гантели', r'велосипед', r'стрижк', r'массаж',
+            r'консультаци', r'приём', r'запись на'
         ]
 
         for pattern in product_patterns:
             if re.search(pattern, msg_lower, re.IGNORECASE):
-                logger.info(f"Найден товар по паттерну: {pattern}")
+                logger.info(f"Найден товар/услуга по паттерну: {pattern}")
                 return True
 
-        logger.info("Не найдено намерение купить")
+        logger.info("Не найдено намерение")
         return False
 
     def _extract_from_message(self, message: str) -> dict:
-        """Извлекает данные из одного сообщения"""
+        """УНИВЕРСАЛЬНОЕ извлечение данных из сообщения"""
         lead_data = {}
         msg_lower = message.lower()
 
-        # Ищем интерес (что хочет купить)
-        interest_keywords = [
+        # Ищем интерес (что хочет клиент)
+        intent_keywords = [
             "хочу купить", "купить", "заказать", "интересует", "ищу", "нужен", "покупаю",
-            "нужна", "нужно", "хочу", "расскажите про", "покажи", "дайте"
+            "нужна", "нужно", "хочу", "хочу записаться", "записаться", "запись", "забронировать",
+            "расскажите про", "покажи", "дайте"
         ]
 
-        for kw in interest_keywords:
+        for kw in intent_keywords:
             if kw in msg_lower:
                 parts = message.split(kw, 1)
                 if len(parts) > 1:
-                    lead_data["interest"] = f"{kw} {parts[1].strip()}"
+                    interest_text = parts[1].strip()
+                    # Удаляем номер телефона из интереса
+                    interest_text = re.sub(r'[\+\d\s\-\(\)]{10,}', '', interest_text).strip()
+                    if interest_text:
+                        lead_data["interest"] = f"{kw} {interest_text}"
+                    else:
+                        lead_data["interest"] = message.strip()
                 else:
                     lead_data["interest"] = message.strip()
                 logger.info(f"Найден интерес: {lead_data['interest']}")
                 break
 
-        # Если не нашли с ключевыми словами - проверяем, не товар ли это
+        # Если не нашли - проверяем паттерны товаров/услуг
         if not lead_data.get("interest"):
             product_patterns = [
-                r'парфюм\s+\w+',
-                r'крем\s+\w+',
-                r'шампунь\s+\w+',
-                r'косметика',
-                r'\w+\s+набор',
-                r'книга\s+.+',
-                r'iphone\s*\d*',
-                r'macbook',
-                r'airpods',
-                r'диван',
-                r'кроссовки',
-                r'ноутбук',
-                r'телефон',
+                r'парфюм\s+\w+', r'крем\s+\w+', r'шампунь\s+\w+',
+                r'косметика', r'\w+\s+набор', r'книга\s+.+',
+                r'iphone\s*\d*', r'айфон\s*\d*', r'macbook', r'airpods',
+                r'диван', r'кроссовки', r'ноутбук', r'телефон',
+                r'гантели', r'велосипед', r'стрижк', r'массаж',
+                r'консультаци', r'приём'
             ]
 
             for pattern in product_patterns:
                 if re.search(pattern, msg_lower, re.IGNORECASE):
                     lead_data["interest"] = message.strip()
-                    logger.info(f"Найден товар по паттерну: {lead_data['interest']}")
+                    logger.info(f"Найден товар/услуга: {lead_data['interest']}")
                     break
 
         # Ищем телефон
@@ -262,11 +251,10 @@ class LeadCollector:
                 logger.info(f"Найден телефон: {lead_data['contact']}")
                 break
 
-        # Ищем email (включая "почта", "email", "маил")
+        # Ищем email
         if not lead_data.get("contact"):
-            # Проверяем ключевые слова перед email
             email_patterns = [
-                r'(?:почта|email|маил|e-mail)[:\s]*([\w\.-]+@[\w\.-]+\.\w+)',
+                r'(?:почта|email|майл|e-mail|мейл)[:\s]*([\w\.-]+@[\w\.-]+\.\w+)',
                 r'([\w\.-]+@[\w\.-]+\.\w+)',
             ]
 
@@ -290,50 +278,41 @@ class LeadCollector:
                             logger.info(f"Найдено имя: {lead_data['name']}")
                     break
 
-        # Ищем бюджет (РАСШИРЕННЫЕ ПАТТЕРНЫ)
+        # Ищем бюджет/цену
         budget_patterns = [
             r'бюджет[:\s]*(\d+[\s\-]?\d*)',
             r'до\s+(\d+[\s\-]?\d*)\s*руб',
             r'(\d+[\s\-]?\d*)\s*руб',
             r'цена[:\s]*(\d+[\s\-]?\d*)',
-            r'от\s+(\d+[\s\-]?\d*)\s*(к|тыс|руб)?\s*до\s*(\d+[\s\-]?\d*)\s*(к|тыс|руб)?',  # от 3к до 5к
-            r'(\d+)\s*(к|тыс)\s*[-–]\s*(\d+)\s*(к|тыс)',  # 3к-5к
-            r'(\d+)\s*[-–]\s*(\d+)\s*(к|тыс)',  # 3-5к
+            r'от\s+(\d+)\s*(к|тыс)?\s*(до|до)\s*(\d+)\s*(к|тыс|руб)?',
+            r'(\d+)\s*(к|тыс)\s*[-–]\s*(\d+)\s*(к|тыс)',
+            r'(\d+)\s*[-–]\s*(\d+)\s*(к|тыс)',
         ]
 
         for pattern in budget_patterns:
             budget_match = re.search(pattern, msg_lower)
             if budget_match:
-                # Обрабатываем "от X до Y"
                 if pattern.startswith(r'от\s+'):
                     min_price = budget_match.group(1)
-                    max_price = budget_match.group(3)
-
-                    # Конвертируем "к" в тысячи
+                    max_price = budget_match.group(4)
                     if budget_match.group(2) and budget_match.group(2) in ['к', 'тыс']:
                         min_price = str(int(min_price) * 1000)
-                    if budget_match.group(4) and budget_match.group(4) in ['к', 'тыс']:
+                    if budget_match.group(5) and budget_match.group(5) in ['к', 'тыс']:
                         max_price = str(int(max_price) * 1000)
-
                     lead_data["budget"] = f"{min_price}-{max_price} руб"
-                # Обрабатываем "Xк-Yк"
                 elif 'к' in pattern or 'тыс' in pattern:
                     groups = budget_match.groups()
                     if len(groups) >= 2:
                         min_price = groups[0]
                         max_price = groups[1]
-
-                        # Проверяем есть ли "к" или "тыс"
                         for g in groups:
                             if g in ['к', 'тыс']:
                                 min_price = str(int(min_price) * 1000)
                                 max_price = str(int(max_price) * 1000)
                                 break
-
                         lead_data["budget"] = f"{min_price}-{max_price} руб"
                 else:
                     lead_data["budget"] = budget_match.group(0)
-
                 logger.info(f"Найден бюджет: {lead_data['budget']}")
                 break
 
