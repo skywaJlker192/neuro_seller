@@ -188,10 +188,16 @@ class DialogManager:
         return "\n".join(lines)
 
     async def _send_lead_to_manager(self, lead, niche_config):
-        """Отправляет лид менеджеру (НЕ пользователю!)"""
+        """Отправляет лид менеджеру (НЕ самому пользователю при тестировании!)"""
         from app.config import settings
 
         manager_id = settings.MANAGER_CHAT_ID
+
+        # НЕ отправляем уведомление, если пользователь = админ (тестирование)
+        if lead.user_id and manager_id and str(lead.user_id) == str(manager_id):
+            logger.info("📢 Пользователь = админ, пропускаем уведомление в чат")
+            return
+
         if not manager_id:
             logger.warning("MANAGER_CHAT_ID не указан, лид не отправлен")
             return

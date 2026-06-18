@@ -116,7 +116,7 @@ class GoogleSheetsExporter:
             return False
 
     async def get_leads_csv(self, days: int = None) -> str:
-        """Получает лиды в формате CSV (Excel-compatible)"""
+        """Получает лиды в формате CSV (Excel-compatible с точкой с запятой)"""
         if not self.connect():
             return "Ошибка подключения к Google Sheets"
 
@@ -142,11 +142,11 @@ class GoogleSheetsExporter:
                         filtered_rows.append(row)
                 data_rows = filtered_rows
 
-            # Создаём CSV с запятыми (стандарт для Excel)
+            # Создаём CSV с ТОЧКОЙ С ЗАПЯТОЙ (для русского Excel)
             csv_lines = []
 
             # Заголовки
-            csv_lines.append("ID,Дата,Время,Telegram ID,Имя,Интерес,Бюджет,Контакт,Ниша,Отправлено менеджеру")
+            csv_lines.append("ID;Дата;Время;Telegram ID;Имя;Интерес;Бюджет;Контакт;Ниша;Отправлено менеджеру")
 
             # Данные
             for row in data_rows:
@@ -154,14 +154,15 @@ class GoogleSheetsExporter:
                 while len(row) < 10:
                     row.append('')
 
-                # Очищаем данные: убираем переносы строк и кавычки
+                # Очищаем данные: убираем переносы строк и ТОЧКИ С ЗАПЯТОЙ в данных
                 cleaned_row = []
                 for cell in row[:10]:
                     cell_str = str(cell).replace('\n', ' ').replace('\r', '')
+                    cell_str = cell_str.replace(';', ',')  # Заменяем ; на , в данных
                     cell_str = cell_str.replace('"', "'")  # Заменяем кавычки
                     cleaned_row.append(cell_str)
 
-                csv_lines.append(','.join(cleaned_row))
+                csv_lines.append(';'.join(cleaned_row))  # Используем ; как разделитель
 
             # Объединяем с переносами строк
             csv_string = '\n'.join(csv_lines)

@@ -15,12 +15,10 @@ class LeadCollector:
     async def check_and_collect_lead(self, user_id: int, history: list[dict]) -> Lead | None:
         """
         Проверяет, собрана ли вся необходимая информация о клиенте
+        Создаёт НОВЫЙ лид для каждого нового интереса
         """
         logger.info(f"🔍 Проверка лида для пользователя {user_id}")
         logger.info(f"История диалога: {len(history)} сообщений")
-
-        # Получаем последний лид пользователя
-        existing_lead = await self.lead_repo.get_by_user_id(user_id)
 
         # Извлекаем данные из истории
         lead_data = self._extract_basic_info(history)
@@ -31,43 +29,81 @@ class LeadCollector:
             logger.warning("Не удалось извлечь данные из истории")
             return None
 
+        # Получаем все лиды пользователя
+        all_user_leads = await self._get_all_user_leads(user_id)
+
+        # Проверяем, есть ли уже лид с таким интересом
+        current_interest = lead_data.get("interest", "").lower()
+        existing_lead_with_same_interest = None
+
+        for lead in all_user_leads:
+            lead_interest = (lead.interest or "").lower()
+            if current_interest and lead_interest and current_interest in lead_interest:
+                existing_lead_with_same_interest = lead
+                break
+
         # Если есть хотя бы один важный параметр — сохраняем/обновляем
         if lead_data.get("interest") or lead_data.get("contact") or lead_data.get("name"):
             logger.info(f"✅ Есть данные для лида: {lead_data}")
 
-            if existing_lead:
-                # Обновляем ТОЛЬКО пустые поля
+            if existing_lead_with_same_interest:
+                # Обновляем СУЩЕСТВУЮЩИЙ лид с таким интересом
+                lead = existing_lead_with_same_interest
                 update_data = {}
 
-                if not existing_lead.interest and lead_data.get("interest"):
+                if not lead.interest and lead_data.get("interest"):
                     update_data["interest"] = lead_data["interest"]
 
-                if not existing_lead.contact and lead_data.get("contact"):
+                if not lead.contact and lead_data.get("contact"):
                     update_data["contact"] = lead_data["contact"]
 
-                if not existing_lead.name and lead_data.get("name"):
+                if not lead.name and lead_data.get("name"):
                     update_data["name"] = lead_data["name"]
 
-                if not existing_lead.budget and lead_data.get("budget"):
+                if not lead.budget and lead_data.get("budget"):
                     update_data["budget"] = lead_data["budget"]
 
                 if update_data:
-                    logger.info(f"Обновляем лид: {update_data}")
-                    lead = await self.lead_repo.update(existing_lead.id, **update_data)
+                    logger.info(f"Обновляем лид {lead.id}: {update_data}")
+                    lead = await self.lead_repo.update(lead.id, **update_data)
                     logger.success(f"✅ Лид обновлён: {lead}")
                     return lead
                 else:
                     logger.info("Нет новых данных для обновления")
-                    return existing_lead
+                    return lead
+
+            elif all_user_leads:
+                # Проверяем последний лид - если в нём есть интерес, но нет контакта
+                # И сейчас пришёл контакт - обновляем последний лид
+                last_lead = all_user_leads[-1]
+                if last_lead.interest and not last_lead.contact and lead_data.get("contact"):
+                    logger.info(f"Добавляем контакт к последнему лиду {last_lead.id}")
+                    lead = await self.lead_repo.update(last_lead.id, contact=lead_data["contact"])
+                    logger.success(f"✅ Контакт добавлен к лиду: {lead}")
+                    return lead
+                else:
+                    # Создаём НОВЫЙ лид для нового интереса
+                    logger.info(f"Создаём НОВЫЙ лид для user_id={user_id}")
+                    lead = await self.lead_repo.create(user_id=user_id, **lead_data)
+                    logger.success(f"✅ Новый лид создан: {lead}")
+                    return lead
             else:
-                # Создаём новый лид
-                logger.info(f"Создаём новый лид для user_id={user_id}")
+                # Первый лид пользователя
+                logger.info(f"Создаём ПЕРВЫЙ лид для user_id={user_id}")
                 lead = await self.lead_repo.create(user_id=user_id, **lead_data)
-                logger.success(f"✅ Лид создан: {lead}")
+                logger.success(f"✅ Первый лид создан: {lead}")
                 return lead
 
         logger.warning("❌ Нет данных для сохранения лида")
         return None
+
+    async def _get_all_user_leads(self, user_id: int) -> list:
+        """Получает все лиды пользователя"""
+        async with async_session() as session:
+            result = await session.execute(
+                select(Lead).where(Lead.user_id == user_id).order_by(Lead.created_at.desc())
+            )
+            return list(result.scalars().all())
 
     def _extract_basic_info(self, history: list[dict]) -> dict:
         """Извлекает базовую информацию из истории"""
