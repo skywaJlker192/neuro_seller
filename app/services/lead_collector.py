@@ -15,32 +15,58 @@ class LeadCollector:
     async def check_and_collect_lead(self, user_id: int, history: list[dict]) -> Lead | None:
         """
         Проверяет, собрана ли вся необходимая информация о клиенте
-        В MVP — достаточно хотя бы одного из: имя, контакт, интерес
         """
-        # Получаем или создаём лид
-        existing_lead = await self.lead_repo.get_by_user_id(user_id)
+        logger.info(f"🔍 Проверка лида для пользователя {user_id}")
+        logger.info(f"История диалога: {len(history)} сообщений")
 
-        if existing_lead and existing_lead.sent_to_manager:
-            return None
+        # Получаем последний лид пользователя
+        existing_lead = await self.lead_repo.get_by_user_id(user_id)
 
         # Извлекаем данные из истории
         lead_data = self._extract_basic_info(history)
+        logger.info(f"Извлечённые данные: {lead_data}")
 
-        # Если есть хотя бы один важный параметр — сохраняем
+        # Проверяем есть ли данные
+        if not lead_data:
+            logger.warning("Не удалось извлечь данные из истории")
+            return None
+
+        # Если есть хотя бы один важный параметр — сохраняем/обновляем
         if lead_data.get("interest") or lead_data.get("contact") or lead_data.get("name"):
+            logger.info(f"✅ Есть данные для лида: {lead_data}")
+
             if existing_lead:
-                # Обновляем только заполненные поля
-                update_data = {k: v for k, v in lead_data.items() if v}
+                # Обновляем ТОЛЬКО пустые поля
+                update_data = {}
+
+                if not existing_lead.interest and lead_data.get("interest"):
+                    update_data["interest"] = lead_data["interest"]
+
+                if not existing_lead.contact and lead_data.get("contact"):
+                    update_data["contact"] = lead_data["contact"]
+
+                if not existing_lead.name and lead_data.get("name"):
+                    update_data["name"] = lead_data["name"]
+
+                if not existing_lead.budget and lead_data.get("budget"):
+                    update_data["budget"] = lead_data["budget"]
+
                 if update_data:
+                    logger.info(f"Обновляем лид: {update_data}")
                     lead = await self.lead_repo.update(existing_lead.id, **update_data)
+                    logger.success(f"✅ Лид обновлён: {lead}")
+                    return lead
                 else:
-                    lead = existing_lead
+                    logger.info("Нет новых данных для обновления")
+                    return existing_lead
             else:
+                # Создаём новый лид
+                logger.info(f"Создаём новый лид для user_id={user_id}")
                 lead = await self.lead_repo.create(user_id=user_id, **lead_data)
+                logger.success(f"✅ Лид создан: {lead}")
+                return lead
 
-            logger.info(f"Лид частично собран для пользователя {user_id}: {lead_data}")
-            return lead
-
+        logger.warning("❌ Нет данных для сохранения лида")
         return None
 
     def _extract_basic_info(self, history: list[dict]) -> dict:
@@ -49,6 +75,7 @@ class LeadCollector:
 
         # Собираем все сообщения пользователя
         user_messages = [msg["content"] for msg in history if msg["role"] == "user"]
+        logger.info(f"Сообщений пользователя: {len(user_messages)}")
 
         if not user_messages:
             return lead_data
@@ -64,6 +91,7 @@ class LeadCollector:
                         lead_data["interest"] = f"{kw} {parts[1].strip()}"
                     else:
                         lead_data["interest"] = msg.strip()
+                    logger.info(f"Найден интерес: {lead_data['interest']}")
                     break
             if lead_data.get("interest"):
                 break
@@ -130,5 +158,5 @@ class LeadCollector:
             if lead_data.get("budget"):
                 break
 
-        logger.info(f"Извлечены данные лида: {lead_data}")
+        logger.info(f"Итоговые данные лида: {lead_data}")
         return lead_data

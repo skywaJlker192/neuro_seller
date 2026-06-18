@@ -188,7 +188,7 @@ class DialogManager:
         return "\n".join(lines)
 
     async def _send_lead_to_manager(self, lead, niche_config):
-        """Отправляет лид менеджеру"""
+        """Отправляет лид менеджеру (НЕ пользователю!)"""
         from app.config import settings
 
         manager_id = settings.MANAGER_CHAT_ID
@@ -210,7 +210,8 @@ class DialogManager:
             text += f"• Бюджет: {lead.budget}\n"
 
         try:
+            # ОТПРАВЛЯЕМ ТОЛЬКО АДМИНУ (manager_id)
             await self.bot.send_message(manager_id, text, parse_mode="HTML")
-            logger.info(f"Лид отправлен менеджеру {manager_id}")
+            logger.info(f"✅ Лид отправлен менеджеру {manager_id}")
         except Exception as e:
             logger.error(f"Не удалось отправить лид менеджеру: {e}")
