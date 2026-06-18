@@ -15,22 +15,62 @@ class LeadCollector:
     async def check_and_collect_lead(self, user_id: int, history: list[dict]) -> Lead | None:
         """
         Проверяет, собрана ли вся необходимая информация о клиенте
-        Создаёт НОВЫЙ лид для каждого нового интереса
         """
         logger.info(f"🔍 Проверка лида для пользователя {user_id}")
         logger.info(f"История диалога: {len(history)} сообщений")
 
-        # Извлекаем данные из истории
-        lead_data = self._extract_basic_info(history)
-        logger.info(f"Извлечённые данные: {lead_data}")
+        # Получаем последнее сообщение пользователя
+        user_messages = [msg for msg in history if msg["role"] == "user"]
 
-        # Проверяем есть ли данные
-        if not lead_data:
-            logger.warning("Не удалось извлечь данные из истории")
+        if not user_messages:
+            logger.info("Нет сообщений пользователя")
             return None
+
+        last_message = user_messages[-1]["content"]
+        logger.info(f"Последнее сообщение: {last_message}")
+
+        # Извлекаем данные из последнего сообщения
+        lead_data = self._extract_from_message(last_message)
+        logger.info(f"Извлечённые данные: {lead_data}")
 
         # Получаем все лиды пользователя
         all_user_leads = await self._get_all_user_leads(user_id)
+
+        # ПРОВЕРКА 1: Если пользователь даёт контакт/бюджет И есть лид без этих данных → обновляем
+        if all_user_leads:
+            last_lead = all_user_leads[-1]
+            update_data = {}
+
+            # Если у лида нет контакта и пользователь дал контакт
+            if not last_lead.contact and lead_data.get("contact"):
+                update_data["contact"] = lead_data["contact"]
+                logger.info(f"Добавляем контакт к лиду {last_lead.id}")
+
+            # Если у лида нет бюджета и пользователь дал бюджет
+            if not last_lead.budget and lead_data.get("budget"):
+                update_data["budget"] = lead_data["budget"]
+                logger.info(f"Добавляем бюджет к лиду {last_lead.id}")
+
+            # Если у лида нет имени и пользователь дал имя
+            if not last_lead.name and lead_data.get("name"):
+                update_data["name"] = lead_data["name"]
+                logger.info(f"Добавляем имя к лиду {last_lead.id}")
+
+            # Обновляем если есть что обновить
+            if update_data:
+                lead = await self.lead_repo.update(last_lead.id, **update_data)
+                logger.success(f"✅ Лид обновлён: {lead}")
+                return lead
+
+        # ПРОВЕРКА 2: Проверяем намерение купить (только если нет лида для обновления)
+        if not self._has_buying_intent_in_message(last_message):
+            logger.info("❌ Нет намерения купить в последнем сообщении - не создаю лид")
+            return None
+
+        # Проверяем есть ли данные
+        if not lead_data:
+            logger.warning("Не удалось извлечь данные из сообщения")
+            return None
 
         # Проверяем, есть ли уже лид с таким интересом
         current_interest = lead_data.get("interest", "").lower()
@@ -73,8 +113,7 @@ class LeadCollector:
                     return lead
 
             elif all_user_leads:
-                # Проверяем последний лид - если в нём есть интерес, но нет контакта
-                # И сейчас пришёл контакт - обновляем последний лид
+                # Проверяем последний лид
                 last_lead = all_user_leads[-1]
 
                 # Проверяем, не менялся ли интерес
@@ -85,12 +124,6 @@ class LeadCollector:
                     logger.info(f"Создаём НОВЫЙ лид для user_id={user_id}")
                     lead = await self.lead_repo.create(user_id=user_id, **lead_data)
                     logger.success(f"✅ Новый лид создан: {lead}")
-                    return lead
-
-                elif last_lead.interest and not last_lead.contact and lead_data.get("contact"):
-                    logger.info(f"Добавляем контакт к последнему лиду {last_lead.id}")
-                    lead = await self.lead_repo.update(last_lead.id, contact=lead_data["contact"])
-                    logger.success(f"✅ Контакт добавлен к лиду: {lead}")
                     return lead
                 else:
                     # Создаём НОВЫЙ лид для нового интереса
@@ -108,48 +141,88 @@ class LeadCollector:
         logger.warning("❌ Нет данных для сохранения лида")
         return None
 
-    async def _get_all_user_leads(self, user_id: int) -> list:
-        """Получает все лиды пользователя"""
-        async with async_session() as session:
-            result = await session.execute(
-                select(Lead).where(Lead.user_id == user_id).order_by(Lead.created_at.desc())
-            )
-            return list(result.scalars().all())
+    def _has_buying_intent_in_message(self, message: str) -> bool:
+        """
+        Проверяет, есть ли намерение купить в СООБЩЕНИИ
+        """
+        msg_lower = message.lower().strip()
 
-    def _extract_basic_info(self, history: list[dict]) -> dict:
-        """Извлекает базовую информацию из истории"""
-        lead_data = {}
-
-        # Собираем все сообщения пользователя
-        user_messages = [msg["content"] for msg in history if msg["role"] == "user"]
-        logger.info(f"Сообщений пользователя: {len(user_messages)}")
-
-        if not user_messages:
-            return lead_data
-
-        # Ищем интерес (что хочет купить) - РАСШИРЕННЫЙ СПИСОК
-        interest_keywords = [
-            "хочу купить", "купить", "заказать", "интересует", "ищу", "нужен", "покупаю",
-            "нужна", "нужно", "хочу", "интересно", "расскажите про", "покажи", "дайте"
+        # Навигационные команды - НЕ создавать лид
+        navigation_keywords = [
+            "контакты", "контакт", "меню", "все товары", "каталог",
+            "помощь", "help", "старт", "начать", "назад", "главное меню",
+            "перезапустить", "рестарт", "кнопки", "категории",
+            "что ты умеешь", "о боте", "инструкция", "список",
+            "что вы предлагаете", "ассортимент", "услуги"
         ]
 
-        # Последнее сообщение пользователя
-        last_msg = user_messages[-1].lower()
+        for keyword in navigation_keywords:
+            if keyword in msg_lower:
+                logger.info(f"Навигационная команда '{keyword}' - не создаю лид")
+                return False
 
-        # Проверяем последнее сообщение на наличие интереса
+        # Проверяем есть ли намерение купить
+        buying_keywords = [
+            "хочу купить", "купить", "заказать", "интересует", "ищу",
+            "нужен", "нужна", "нужно", "покупаю", "хочу",
+            "расскажите про", "покажи", "дайте", "цена", "сколько стоит",
+            "стоимость", "характеристики"
+        ]
+
+        # Проверяем сообщение
+        for keyword in buying_keywords:
+            if keyword in msg_lower:
+                logger.info(f"Найдено намерение купить: '{keyword}'")
+                return True
+
+        # Проверяем на наличие конкретных товаров
+        product_patterns = [
+            r'парфюм\s+\w+',
+            r'крем\s+\w+',
+            r'шампунь\s+\w+',
+            r'косметика',
+            r'\w+\s+набор',
+            r'книга\s+.+',
+            r'iphone\s*\d*',
+            r'macbook',
+            r'airpods',
+            r'диван',
+            r'кроссовки',
+            r'ноутбук',
+            r'телефон',
+        ]
+
+        for pattern in product_patterns:
+            if re.search(pattern, msg_lower, re.IGNORECASE):
+                logger.info(f"Найден товар по паттерну: {pattern}")
+                return True
+
+        logger.info("Не найдено намерение купить")
+        return False
+
+    def _extract_from_message(self, message: str) -> dict:
+        """Извлекает данные из одного сообщения"""
+        lead_data = {}
+        msg_lower = message.lower()
+
+        # Ищем интерес (что хочет купить)
+        interest_keywords = [
+            "хочу купить", "купить", "заказать", "интересует", "ищу", "нужен", "покупаю",
+            "нужна", "нужно", "хочу", "расскажите про", "покажи", "дайте"
+        ]
+
         for kw in interest_keywords:
-            if kw in last_msg:
-                parts = user_messages[-1].split(kw, 1)
+            if kw in msg_lower:
+                parts = message.split(kw, 1)
                 if len(parts) > 1:
                     lead_data["interest"] = f"{kw} {parts[1].strip()}"
                 else:
-                    lead_data["interest"] = user_messages[-1].strip()
+                    lead_data["interest"] = message.strip()
                 logger.info(f"Найден интерес: {lead_data['interest']}")
                 break
 
         # Если не нашли с ключевыми словами - проверяем, не товар ли это
         if not lead_data.get("interest"):
-            # Проверяем, не похоже ли сообщение на название товара
             product_patterns = [
                 r'парфюм\s+\w+',
                 r'крем\s+\w+',
@@ -167,12 +240,12 @@ class LeadCollector:
             ]
 
             for pattern in product_patterns:
-                if re.search(pattern, last_msg, re.IGNORECASE):
-                    lead_data["interest"] = user_messages[-1].strip()
+                if re.search(pattern, msg_lower, re.IGNORECASE):
+                    lead_data["interest"] = message.strip()
                     logger.info(f"Найден товар по паттерну: {lead_data['interest']}")
                     break
 
-        # Ищем телефон (несколько форматов)
+        # Ищем телефон
         phone_patterns = [
             r'(\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
             r'(\+7|8)\d{10}',
@@ -181,58 +254,96 @@ class LeadCollector:
             r'мой номер[:\s]*(\+?7?\d{10,11})',
         ]
 
-        for msg in user_messages:
-            msg_clean = msg.replace(" ", "")
-            for pattern in phone_patterns:
-                phone_match = re.search(pattern, msg_clean)
-                if phone_match:
-                    lead_data["contact"] = phone_match.group(0)
-                    logger.info(f"Найден телефон: {lead_data['contact']}")
-                    break
-            if lead_data.get("contact"):
+        msg_clean = message.replace(" ", "")
+        for pattern in phone_patterns:
+            phone_match = re.search(pattern, msg_clean)
+            if phone_match:
+                lead_data["contact"] = phone_match.group(0)
+                logger.info(f"Найден телефон: {lead_data['contact']}")
                 break
 
-        # Ищем email
+        # Ищем email (включая "почта", "email", "маил")
         if not lead_data.get("contact"):
-            for msg in user_messages:
-                email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', msg)
+            # Проверяем ключевые слова перед email
+            email_patterns = [
+                r'(?:почта|email|маил|e-mail)[:\s]*([\w\.-]+@[\w\.-]+\.\w+)',
+                r'([\w\.-]+@[\w\.-]+\.\w+)',
+            ]
+
+            for pattern in email_patterns:
+                email_match = re.search(pattern, message, re.IGNORECASE)
                 if email_match:
-                    lead_data["contact"] = email_match.group(0)
+                    lead_data["contact"] = email_match.group(1)
                     logger.info(f"Найден email: {lead_data['contact']}")
                     break
 
         # Ищем имя
-        for msg in user_messages:
-            msg_lower = msg.lower()
-            if "меня зовут" in msg_lower or "мое имя" in msg_lower or "зовут" in msg_lower:
-                for kw in ["меня зовут", "мое имя", "зовут"]:
-                    if kw in msg_lower:
-                        parts = msg.lower().split(kw, 1)
-                        if len(parts) > 1:
-                            name_part = parts[1].strip().split()[0]
-                            name = ''.join(c for c in name_part if c.isalpha() or c == '-')
-                            if name and len(name) > 1:
-                                lead_data["name"] = name.capitalize()
-                                logger.info(f"Найдено имя: {lead_data['name']}")
-                        break
+        if "меня зовут" in msg_lower or "мое имя" in msg_lower or "зовут" in msg_lower:
+            for kw in ["меня зовут", "мое имя", "зовут"]:
+                if kw in msg_lower:
+                    parts = msg_lower.split(kw, 1)
+                    if len(parts) > 1:
+                        name_part = parts[1].strip().split()[0]
+                        name = ''.join(c for c in name_part if c.isalpha() or c == '-')
+                        if name and len(name) > 1:
+                            lead_data["name"] = name.capitalize()
+                            logger.info(f"Найдено имя: {lead_data['name']}")
+                    break
 
-        # Ищем бюджет
+        # Ищем бюджет (РАСШИРЕННЫЕ ПАТТЕРНЫ)
         budget_patterns = [
             r'бюджет[:\s]*(\d+[\s\-]?\d*)',
             r'до\s+(\d+[\s\-]?\d*)\s*руб',
             r'(\d+[\s\-]?\d*)\s*руб',
             r'цена[:\s]*(\d+[\s\-]?\d*)',
+            r'от\s+(\d+[\s\-]?\d*)\s*(к|тыс|руб)?\s*до\s*(\d+[\s\-]?\d*)\s*(к|тыс|руб)?',  # от 3к до 5к
+            r'(\d+)\s*(к|тыс)\s*[-–]\s*(\d+)\s*(к|тыс)',  # 3к-5к
+            r'(\d+)\s*[-–]\s*(\d+)\s*(к|тыс)',  # 3-5к
         ]
 
-        for msg in user_messages:
-            for pattern in budget_patterns:
-                budget_match = re.search(pattern, msg.lower())
-                if budget_match:
+        for pattern in budget_patterns:
+            budget_match = re.search(pattern, msg_lower)
+            if budget_match:
+                # Обрабатываем "от X до Y"
+                if pattern.startswith(r'от\s+'):
+                    min_price = budget_match.group(1)
+                    max_price = budget_match.group(3)
+
+                    # Конвертируем "к" в тысячи
+                    if budget_match.group(2) and budget_match.group(2) in ['к', 'тыс']:
+                        min_price = str(int(min_price) * 1000)
+                    if budget_match.group(4) and budget_match.group(4) in ['к', 'тыс']:
+                        max_price = str(int(max_price) * 1000)
+
+                    lead_data["budget"] = f"{min_price}-{max_price} руб"
+                # Обрабатываем "Xк-Yк"
+                elif 'к' in pattern or 'тыс' in pattern:
+                    groups = budget_match.groups()
+                    if len(groups) >= 2:
+                        min_price = groups[0]
+                        max_price = groups[1]
+
+                        # Проверяем есть ли "к" или "тыс"
+                        for g in groups:
+                            if g in ['к', 'тыс']:
+                                min_price = str(int(min_price) * 1000)
+                                max_price = str(int(max_price) * 1000)
+                                break
+
+                        lead_data["budget"] = f"{min_price}-{max_price} руб"
+                else:
                     lead_data["budget"] = budget_match.group(0)
-                    logger.info(f"Найден бюджет: {lead_data['budget']}")
-                    break
-            if lead_data.get("budget"):
+
+                logger.info(f"Найден бюджет: {lead_data['budget']}")
                 break
 
-        logger.info(f"Итоговые данные лида: {lead_data}")
+        logger.info(f"Итоговые данные: {lead_data}")
         return lead_data
+
+    async def _get_all_user_leads(self, user_id: int) -> list:
+        """Получает все лиды пользователя"""
+        async with async_session() as session:
+            result = await session.execute(
+                select(Lead).where(Lead.user_id == user_id).order_by(Lead.created_at.desc())
+            )
+            return list(result.scalars().all())
