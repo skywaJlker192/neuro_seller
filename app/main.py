@@ -36,7 +36,7 @@ async def main():
     )
 
     dp = Dispatcher()
-    dp.include_routers(start.router, messages.router, media.router, admin.router)
+    dp.include_routers(admin.router, start.router, messages.router, media.router)
 
     logger.info("✅ Бот запущен через публичный прокси!")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

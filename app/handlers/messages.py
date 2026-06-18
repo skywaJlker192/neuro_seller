@@ -11,7 +11,7 @@ router = Router()
 # Определяем нишу по умолчанию
 DEFAULT_NICHE = os.path.join("niches", "default.yaml")
 
-@router.message(F.text)
+@router.message(F.text & ~F.text.startswith("/"))
 async def handle_text_message(message: Message, bot: Bot, state: FSMContext):
     """Обработка текстовых сообщений"""
     user_id = message.from_user.id

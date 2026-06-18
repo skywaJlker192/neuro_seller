@@ -9,11 +9,15 @@ import os
 
 router = Router()
 
+@router.message(Command("check_id"))
+async def check_my_id(message: Message):
+    """Показывает твой ID"""
+    await message.answer(f"Твой ID: {message.from_user.id}\nMANAGER_CHAT_ID: {settings.MANAGER_CHAT_ID}")
 
 def is_admin(user_id: int) -> bool:
     """Проверяет, является ли пользователь админом"""
-    admin_ids = [settings.MANAGER_CHAT_ID]
-    return user_id in admin_ids
+    admin_id = int(settings.MANAGER_CHAT_ID)  # Преобразуем в int
+    return user_id == admin_id
 
 
 @router.message(Command("export_leads"))
