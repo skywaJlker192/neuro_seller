@@ -27,13 +27,29 @@ def get_niche_config():
     return load_niche(get_current_niche_name())
 
 
+def cat_to_dict(cat) -> dict:
+    """Конвертирует Pydantic объект категории в dict"""
+    if cat is None:
+        return {}
+    if isinstance(cat, dict):
+        return cat
+    if hasattr(cat, 'model_dump'):
+        return cat.model_dump()
+    if hasattr(cat, 'dict'):
+        return cat.dict()
+    if hasattr(cat, '__dict__'):
+        return cat.__dict__
+    return {}
+
+
 def get_category_by_id(cat_id: str) -> dict | None:
     """Находит категорию по ID"""
     niche_config = get_niche_config()
     categories = getattr(niche_config, 'categories', []) or []
     for cat in categories:
-        if cat.get('id') == cat_id:
-            return cat
+        cat_dict = cat_to_dict(cat)
+        if cat_dict.get('id') == cat_id:
+            return cat_dict
     return None
 
 
@@ -67,19 +83,27 @@ async def main_menu(event):
     niche_config = get_niche_config()
     text = f"🏪 <b>{niche_config.business_name}</b>\n\nВыберите категорию:"
 
-    if isinstance(event, CallbackQuery):
-        await event.message.edit_text(
-            text,
-            reply_markup=get_category_inline_keyboard(),
-            parse_mode="HTML"
-        )
-        await event.answer()
-    else:
-        await event.answer(
-            text,
-            reply_markup=get_category_inline_keyboard(),
-            parse_mode="HTML"
-        )
+    try:
+        if isinstance(event, CallbackQuery):
+            await event.message.edit_text(
+                text,
+                reply_markup=get_category_inline_keyboard(),
+                parse_mode="HTML"
+            )
+            await event.answer()
+        else:
+            await event.answer(
+                text,
+                reply_markup=get_category_inline_keyboard(),
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        if "message is not modified" in str(e):
+            # Сообщение не изменилось — просто отвечаем на callback
+            if isinstance(event, CallbackQuery):
+                await event.answer()
+        else:
+            raise
 
 
 @router.message(F.text == "🔄 Перезапустить")
@@ -107,19 +131,26 @@ async def handle_category(event, cat_id: str):
     else:
         text = category.get('description', 'Нет описания')
 
-    if isinstance(event, CallbackQuery):
-        await event.message.edit_text(
-            text,
-            reply_markup=get_back_inline_keyboard(),
-            parse_mode="HTML"
-        )
-        await event.answer()
-    else:
-        await event.answer(
-            text,
-            reply_markup=get_back_inline_keyboard(),
-            parse_mode="HTML"
-        )
+    try:
+        if isinstance(event, CallbackQuery):
+            await event.message.edit_text(
+                text,
+                reply_markup=get_back_inline_keyboard(),
+                parse_mode="HTML"
+            )
+            await event.answer()
+        else:
+            await event.answer(
+                text,
+                reply_markup=get_back_inline_keyboard(),
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        if "message is not modified" in str(e):
+            if isinstance(event, CallbackQuery):
+                await event.answer()
+        else:
+            raise
 
 
 # Обработчики для текстовых кнопок (из ReplyKeyboard)
@@ -137,10 +168,13 @@ async def handle_text_category(message: Message):
 
     # Ищем категорию по названию
     for cat in categories:
-        emoji = cat.get('emoji', '')
-        name = cat.get('name', '')
+        cat_dict = cat_to_dict(cat)
+        emoji = cat_dict.get('emoji', '')
+        name = cat_dict.get('name', '')
+        cat_id = cat_dict.get('id', '')
+
         if text == f"{emoji} {name}":
-            await handle_category(message, cat.get('id'))
+            await handle_category(message, cat_id)
             return
 
     # Если не нашли — показываем описание
@@ -150,7 +184,10 @@ async def handle_text_category(message: Message):
     )
 
 
-# Обработчики для callback категорий (из InlineKeyboard)
+# ============================================
+# ОБРАБОТЧИКИ CALLBACK КАТЕГОРИЙ (все ниши)
+# ============================================
+
 # UniversalStore категории
 @router.callback_query(F.data == "category_laptops")
 async def category_laptops(callback: CallbackQuery):
@@ -245,7 +282,6 @@ async def promotions(event):
     """Акции и скидки"""
     niche_config = get_niche_config()
 
-    # Универсальные акции
     text = (
         "🔥 <b>Акции и скидки</b>\n\n"
         "🎁 При заказе от 5 000₽ — подарок!\n"
@@ -254,15 +290,22 @@ async def promotions(event):
         "Акции действуют до конца месяца!"
     )
 
-    if isinstance(event, CallbackQuery):
-        await event.message.edit_text(
-            text,
-            reply_markup=get_back_keyboard(),
-            parse_mode="HTML"
-        )
-        await event.answer()
-    else:
-        await event.answer(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+    try:
+        if isinstance(event, CallbackQuery):
+            await event.message.edit_text(
+                text,
+                reply_markup=get_back_keyboard(),
+                parse_mode="HTML"
+            )
+            await event.answer()
+        else:
+            await event.answer(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+    except Exception as e:
+        if "message is not modified" in str(e):
+            if isinstance(event, CallbackQuery):
+                await event.answer()
+        else:
+            raise
 
 
 @router.message(F.text == "📦 Все товары")
@@ -271,27 +314,34 @@ async def all_products(event):
     """Все товары/услуги"""
     niche_config = get_niche_config()
 
-    # Формируем список из категорий
     categories = getattr(niche_config, 'categories', []) or []
 
     text = f"📦 <b>{niche_config.business_name}</b>\n\nУ нас есть:\n\n"
 
     for cat in categories:
-        emoji = cat.get('emoji', '')
-        name = cat.get('name', '')
+        cat_dict = cat_to_dict(cat)
+        emoji = cat_dict.get('emoji', '')
+        name = cat_dict.get('name', '')
         text += f"{emoji} {name}\n"
 
     text += "\nНапишите, что вас интересует — помогу выбрать!"
 
-    if isinstance(event, CallbackQuery):
-        await event.message.edit_text(
-            text,
-            reply_markup=get_back_keyboard(),
-            parse_mode="HTML"
-        )
-        await event.answer()
-    else:
-        await event.answer(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+    try:
+        if isinstance(event, CallbackQuery):
+            await event.message.edit_text(
+                text,
+                reply_markup=get_back_keyboard(),
+                parse_mode="HTML"
+            )
+            await event.answer()
+        else:
+            await event.answer(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+    except Exception as e:
+        if "message is not modified" in str(e):
+            if isinstance(event, CallbackQuery):
+                await event.answer()
+        else:
+            raise
 
 
 @router.message(F.text == "📞 Контакты")
@@ -308,12 +358,19 @@ async def contacts(event):
         f"Мы всегда на связи!"
     )
 
-    if isinstance(event, CallbackQuery):
-        await event.message.edit_text(
-            text,
-            reply_markup=get_back_keyboard(),
-            parse_mode="HTML"
-        )
-        await event.answer()
-    else:
-        await event.answer(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+    try:
+        if isinstance(event, CallbackQuery):
+            await event.message.edit_text(
+                text,
+                reply_markup=get_back_keyboard(),
+                parse_mode="HTML"
+            )
+            await event.answer()
+        else:
+            await event.answer(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+    except Exception as e:
+        if "message is not modified" in str(e):
+            if isinstance(event, CallbackQuery):
+                await event.answer()
+        else:
+            raise
