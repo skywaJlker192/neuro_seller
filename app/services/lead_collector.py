@@ -14,7 +14,7 @@ class LeadCollector:
 
     async def check_and_collect_lead(self, user_id: int, history: list[dict]) -> Lead | None:
         """
-        Проверяет и собирает лид для ЛЮБОЙ ниши
+        Создаёт лид ТОЛЬКО когда есть ВСЕ данные: интерес + контакт + бюджет
         """
         logger.info(f"🔍 Проверка лида для пользователя {user_id}")
         logger.info(f"История диалога: {len(history)} сообщений")
@@ -29,46 +29,35 @@ class LeadCollector:
         last_message = user_messages[-1]["content"]
         logger.info(f"Последнее сообщение: {last_message}")
 
-        # Извлекаем данные из ВСЕЙ истории (не только последнего сообщения)
+        # Извлекаем данные из ВСЕЙ истории
         lead_data = self._extract_from_history(history)
         logger.info(f"Извлечённые данные: {lead_data}")
 
-        # Получаем все лиды пользователя
-        all_user_leads = await self._get_all_user_leads(user_id)
+        # ВАЖНО: Проверяем наличие ВСЕХ обязательных полей
+        missing_fields = []
 
-        # ПРОВЕРКА 1: Если пользователь даёт контакт/данные И есть лид без этих данных → обновляем
-        if all_user_leads:
-            last_lead = all_user_leads[-1]
-            update_data = {}
+        if not lead_data.get("interest"):
+            missing_fields.append("интерес (что хочет купить)")
 
-            # Проверяем каждое поле лида
-            if not last_lead.contact and lead_data.get("contact"):
-                update_data["contact"] = lead_data["contact"]
-                logger.info(f"Добавляем контакт к лиду {last_lead.id}")
+        if not lead_data.get("contact"):
+            missing_fields.append("контакт (телефон или email)")
 
-            if not last_lead.budget and lead_data.get("budget"):
-                update_data["budget"] = lead_data["budget"]
-                logger.info(f"Добавляем бюджет к лиду {last_lead.id}")
+        if not lead_data.get("budget"):
+            missing_fields.append("бюджет")
 
-            if not last_lead.name and lead_data.get("name"):
-                update_data["name"] = lead_data["name"]
-                logger.info(f"Добавляем имя к лиду {last_lead.id}")
+        if missing_fields:
+            logger.info(f"❌ Не хватает данных: {', '.join(missing_fields)} - НЕ создаю лид")
+            return None
 
-            # Обновляем если есть что обновить
-            if update_data:
-                lead = await self.lead_repo.update(last_lead.id, **update_data)
-                logger.success(f"✅ Лид обновлён: {lead}")
-                return lead
+        logger.info(f"✅ Все данные есть: {lead_data}")
 
-        # ПРОВЕРКА 2: Проверяем намерение (только если нет лида для обновления)
+        # Проверяем намерение
         if not self._has_intent_in_message(last_message):
             logger.info("❌ Нет намерения - не создаю лид")
             return None
 
-        # Проверяем есть ли данные
-        if not lead_data:
-            logger.warning("Не удалось извлечь данные из сообщения")
-            return None
+        # Получаем все лиды пользователя
+        all_user_leads = await self._get_all_user_leads(user_id)
 
         # Проверяем, есть ли уже лид с таким интересом
         current_interest = lead_data.get("interest", "").lower()
@@ -80,53 +69,53 @@ class LeadCollector:
                 existing_lead_with_same_interest = lead
                 break
 
-        # Если есть данные — сохраняем/обновляем
-        if lead_data.get("interest") or lead_data.get("contact") or lead_data.get("name"):
-            logger.info(f"✅ Есть данные для лида: {lead_data}")
+        # Создаём или обновляем лид
+        if existing_lead_with_same_interest:
+            # Обновляем СУЩЕСТВУЮЩИЙ лид
+            lead = existing_lead_with_same_interest
+            update_data = {}
 
-            if existing_lead_with_same_interest:
-                lead = existing_lead_with_same_interest
-                update_data = {}
+            if not lead.interest and lead_data.get("interest"):
+                update_data["interest"] = lead_data["interest"]
+            if not lead.contact and lead_data.get("contact"):
+                update_data["contact"] = lead_data["contact"]
+            if not lead.name and lead_data.get("name"):
+                update_data["name"] = lead_data["name"]
+            if not lead.budget and lead_data.get("budget"):
+                update_data["budget"] = lead_data["budget"]
 
-                if not lead.interest and lead_data.get("interest"):
-                    update_data["interest"] = lead_data["interest"]
-                if not lead.contact and lead_data.get("contact"):
-                    update_data["contact"] = lead_data["contact"]
-                if not lead.name and lead_data.get("name"):
-                    update_data["name"] = lead_data["name"]
-                if not lead.budget and lead_data.get("budget"):
-                    update_data["budget"] = lead_data["budget"]
-
-                if update_data:
-                    logger.info(f"Обновляем лид {lead.id}: {update_data}")
-                    lead = await self.lead_repo.update(lead.id, **update_data)
-                    logger.success(f"✅ Лид обновлён: {lead}")
-                    return lead
-                else:
-                    logger.info("Нет новых данных для обновления")
-                    return lead
-
-            elif all_user_leads:
-                last_lead = all_user_leads[-1]
-                last_interest = (last_lead.interest or "").lower()
-
-                if current_interest and last_interest and current_interest != last_interest:
-                    logger.info(f"Новый интерес '{current_interest}' - создаю новый лид")
-                    lead = await self.lead_repo.create(user_id=user_id, **lead_data)
-                    logger.success(f"✅ Новый лид создан: {lead}")
-                    return lead
-                else:
-                    lead = await self.lead_repo.create(user_id=user_id, **lead_data)
-                    logger.success(f"✅ Новый лид создан: {lead}")
-                    return lead
+            if update_data:
+                logger.info(f"Обновляем лид {lead.id}: {update_data}")
+                lead = await self.lead_repo.update(lead.id, **update_data)
+                logger.success(f"✅ Лид обновлён: {lead}")
+                return lead
             else:
-                logger.info(f"Создаём ПЕРВЫЙ лид для user_id={user_id}")
-                lead = await self.lead_repo.create(user_id=user_id, **lead_data)
-                logger.success(f"✅ Первый лид создан: {lead}")
+                logger.info("Нет новых данных для обновления")
                 return lead
 
-        logger.warning("❌ Нет данных для сохранения лида")
-        return None
+        elif all_user_leads:
+            # Проверяем последний лид
+            last_lead = all_user_leads[-1]
+            last_interest = (last_lead.interest or "").lower()
+
+            if current_interest and last_interest and current_interest != last_interest:
+                # Новый интерес - создаём НОВЫЙ лид
+                logger.info(f"Новый интерес '{current_interest}' - создаю новый лид")
+                lead = await self.lead_repo.create(user_id=user_id, **lead_data)
+                logger.success(f"✅ Новый лид создан: {lead}")
+                return lead
+            else:
+                # Обновляем последний лид
+                logger.info(f"Обновляю последний лид {last_lead.id}")
+                lead = await self.lead_repo.create(user_id=user_id, **lead_data)
+                logger.success(f"✅ Лид создан: {lead}")
+                return lead
+        else:
+            # Первый лид пользователя
+            logger.info(f"Создаём ПЕРВЫЙ лид для user_id={user_id}")
+            lead = await self.lead_repo.create(user_id=user_id, **lead_data)
+            logger.success(f"✅ Первый лид создан: {lead}")
+            return lead
 
     def _has_intent_in_message(self, message: str) -> bool:
         """
@@ -221,8 +210,6 @@ class LeadCollector:
         if not user_messages:
             return lead_data
 
-        # Объединяем все сообщения для анализа
-        all_text = " ".join(user_messages)
         logger.info(f"Анализирую {len(user_messages)} сообщений")
 
         # Извлекаем интерес из последнего сообщения (самое актуальное)
@@ -264,7 +251,7 @@ class LeadCollector:
         return lead_data
 
     def _extract_interest(self, message: str) -> str | None:
-        """Извлекает интерес из сообщения"""
+        """Извлекает интерес из сообщения (ЧИСТЫЙ, без телефона, бюджета, имени)"""
         msg_lower = message.lower()
 
         intent_keywords = [
@@ -278,11 +265,26 @@ class LeadCollector:
                 parts = message.split(kw, 1)
                 if len(parts) > 1:
                     interest_text = parts[1].strip()
-                    # Удаляем номер телефона и бюджет из интереса
+
+                    # УДАЛЯЕМ из интереса:
+                    # 1. Номер телефона
                     interest_text = re.sub(r'[\+\d\s\-\(\)]{10,}', '', interest_text)
+                    # 2. Бюджет
                     interest_text = re.sub(r'бюджет[:\s]*\d+', '', interest_text, flags=re.IGNORECASE)
                     interest_text = re.sub(r'\d+\s*(к|тыс|руб)?\s*(до|до)\s*\d+', '', interest_text, flags=re.IGNORECASE)
+                    # 3. Имя
+                    interest_text = re.sub(r'моё имя\s+\w+', '', interest_text, flags=re.IGNORECASE)
+                    interest_text = re.sub(r'меня зовут\s+\w+', '', interest_text, flags=re.IGNORECASE)
+                    interest_text = re.sub(r'мое имя\s+\w+', '', interest_text, flags=re.IGNORECASE)
+                    # 4. Телефон
+                    interest_text = re.sub(r'мой телефон', '', interest_text, flags=re.IGNORECASE)
+                    interest_text = re.sub(r'телефон[:\s]*[\+\d]+', '', interest_text, flags=re.IGNORECASE)
+                    # 5. Email
+                    interest_text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', '', interest_text)
+
                     interest_text = interest_text.strip()
+                    interest_text = re.sub(r'\s+', ' ', interest_text)  # Убираем лишние пробелы
+
                     if interest_text:
                         return f"{kw} {interest_text}"
                 return message.strip()
