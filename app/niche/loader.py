@@ -2,12 +2,15 @@ import yaml
 from pathlib import Path
 from app.niche.schemas import NicheConfig
 
-def load_niche(file_path: str | Path) -> NicheConfig:
+# Путь к папке с конфигами ниш
+NICHES_DIR = Path("niches")
+
+def load_niche(niche_name: str) -> NicheConfig:
     """
     Загружает конфигурацию ниши из YAML-файла
 
     Args:
-        file_path: Путь к YAML-файлу с настройками ниши
+        niche_name: Название ниши (например: "default", "beauty_salon", "auto_service")
 
     Returns:
         Объект NicheConfig с валидированными данными
@@ -17,7 +20,12 @@ def load_niche(file_path: str | Path) -> NicheConfig:
         yaml.YAMLError: Если файл некорректный YAML
         pydantic.ValidationError: Если данные не проходят валидацию
     """
-    path = Path(file_path)
+    # Если передан полный путь — используем его
+    if "/" in niche_name or "\\" in niche_name or niche_name.endswith(".yaml"):
+        path = Path(niche_name)
+    else:
+        # Иначе ищем в папке niches/
+        path = NICHES_DIR / f"{niche_name}.yaml"
 
     if not path.exists():
         raise FileNotFoundError(f"Конфиг ниши не найден: {path}")
