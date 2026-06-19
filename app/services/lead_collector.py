@@ -43,6 +43,29 @@ class LeadCollector:
         lead_data = self._extract_from_messages(relevant_messages)
         logger.info(f"Извлечённые данные: {lead_data}")
 
+        # 🔧 ДОБАВЛЕНО: Логирование последнего лида и проверка на дубликаты
+        if all_user_leads:
+            last_lead = all_user_leads[-1]
+            logger.info(f"📋 Последний лид пользователя: ID={last_lead.id}, интерес={last_lead.interest}, контакт={last_lead.contact}, бюджет={last_lead.budget}")
+
+            # Проверяем не создавали ли мы уже лид с такими данными СЕЙЧАС
+            current_interest = lead_data.get("interest", "").lower()
+            current_contact = lead_data.get("contact", "").lower()
+            current_budget = lead_data.get("budget", "").lower()
+
+            last_interest = (last_lead.interest or "").lower()
+            last_contact = (last_lead.contact or "").lower()
+            last_budget = (last_lead.budget or "").lower()
+
+            if (current_interest == last_interest and
+                current_contact == last_contact and
+                current_budget == last_budget and
+                current_interest and current_contact and current_budget):
+                logger.warning("⚠️ Такой лид уже создан! НЕ создаю дубликат.")
+                return None
+            else:
+                logger.info("✅ Данные отличаются от последнего лида — создаю новый")
+
         missing_fields = []
 
         if not lead_data.get("interest"):
@@ -66,7 +89,7 @@ class LeadCollector:
 
         # ВАЖНО: ВСЕГДА создаём НОВЫЙ лид если есть все данные
         # НЕ обновляем старые лиды
-        logger.info(f"Создаём НОВЫЙ лид")
+        logger.info(f"🎯 Создаём НОВЫЙ лид")
         lead = await self.lead_repo.create(user_id=user_id, **lead_data)
         logger.success(f"✅ Новый лид создан: {lead}")
         return lead
