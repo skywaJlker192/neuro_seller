@@ -19,10 +19,6 @@ from app.db.database import init_db
 
 # Рабочие прокси (попробуй по очереди если один не работает):
 PROXY_URLS = [
-    "http://95.140.154.156:1080",      # Russia, elite
-    "http://213.27.29.153:51000",      # Russia, SOCKS5
-    "http://194.58.37.234:65200",      # Russia, SOCKS5, super fast
-    "http://82.114.228.67:1080",       # Russia, elite
     "http://84.47.150.125:1080",       # Russia, elite
     "http://176.12.71.36:1234",        # Iran, elite HTTP
     "http://92.118.112.25:1082",       # Greece, elite HTTP
