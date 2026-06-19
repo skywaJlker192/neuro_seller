@@ -15,7 +15,7 @@ class LeadCollector:
     async def check_and_collect_lead(self, user_id: int, history: list[dict]) -> Lead | None:
         """
         Создаёт лид ТОЛЬКО когда есть ВСЕ данные: интерес + контакт + бюджет
-        ВСЕГДА создаёт НОВЫЙ лид - не обновляет старые
+        Анализирует сообщения ПОСЛЕ последнего созданного лида
         """
         logger.info(f"🔍 Проверка лида для пользователя {user_id}")
         logger.info(f"История диалога: {len(history)} сообщений")
@@ -31,24 +31,19 @@ class LeadCollector:
 
         all_user_leads = await self._get_all_user_leads(user_id)
 
-        if all_user_leads:
-            last_lead = all_user_leads[-1]
-            logger.info(f"Последний лид ID={last_lead.id} создан: {last_lead.created_at}")
-            relevant_messages = user_messages[-2:]
-            logger.info(f"Анализирую {len(relevant_messages)} СВЕЖИХ сообщений")
-        else:
-            relevant_messages = user_messages[-3:] if len(user_messages) >= 3 else user_messages
-            logger.info(f"Первый лид — анализирую {len(relevant_messages)} сообщений")
+        # 🔧 ВАЖНО: Берём ВСЕ сообщения (не только последние 2!)
+        # Потому что данные могут быть разбросаны по диалогу
+        relevant_messages = user_messages[-5:] if len(user_messages) >= 5 else user_messages
+        logger.info(f"Анализирую {len(relevant_messages)} последних сообщений пользователя")
 
         lead_data = self._extract_from_messages(relevant_messages)
         logger.info(f"Извлечённые данные: {lead_data}")
 
-        # 🔧 ДОБАВЛЕНО: Логирование последнего лида и проверка на дубликаты
+        # Проверяем на дубликаты
         if all_user_leads:
             last_lead = all_user_leads[-1]
-            logger.info(f"📋 Последний лид пользователя: ID={last_lead.id}, интерес={last_lead.interest}, контакт={last_lead.contact}, бюджет={last_lead.budget}")
+            logger.info(f"📋 Последний лид: ID={last_lead.id}, интерес={last_lead.interest}, контакт={last_lead.contact}, бюджет={last_lead.budget}")
 
-            # Проверяем не создавали ли мы уже лид с такими данными СЕЙЧАС
             current_interest = lead_data.get("interest", "").lower()
             current_contact = lead_data.get("contact", "").lower()
             current_budget = lead_data.get("budget", "").lower()
@@ -88,7 +83,6 @@ class LeadCollector:
             return None
 
         # ВАЖНО: ВСЕГДА создаём НОВЫЙ лид если есть все данные
-        # НЕ обновляем старые лиды
         logger.info(f"🎯 Создаём НОВЫЙ лид")
         lead = await self.lead_repo.create(user_id=user_id, **lead_data)
         logger.success(f"✅ Новый лид создан: {lead}")
@@ -141,7 +135,7 @@ class LeadCollector:
         return False
 
     def _extract_from_messages(self, messages: list[dict]) -> dict:
-        """Извлекает данные ТОЛЬКО из ПОСЛЕДНЕГО сообщения пользователя"""
+        """🔧 Извлекает данные из ВСЕХ сообщений (не только последнего!)"""
         lead_data = {}
 
         if not messages:
@@ -149,30 +143,38 @@ class LeadCollector:
 
         logger.info(f"Анализирую {len(messages)} сообщений")
 
-        # ВАЖНО: Берём ТОЛЬКО последнее сообщение пользователя
-        last_user_msg = messages[-1]["content"]
-        logger.info(f"Анализирую сообщение: {last_user_msg}")
+        # 🔧 ГЛАВНОЕ ИЗМЕНЕНИЕ: Проходим по ВСЕМ сообщениям и собираем данные
+        for msg in messages:
+            message_text = msg["content"]
+            logger.info(f"Анализирую сообщение: {message_text}")
 
-        # Извлекаем ВСЕ данные ТОЛЬКО из последнего сообщения
-        name = self._extract_name(last_user_msg)
-        if name:
-            lead_data["name"] = name
-            logger.info(f"Найдено имя: {name}")
+            # Извлекаем имя
+            if not lead_data.get("name"):
+                name = self._extract_name(message_text)
+                if name:
+                    lead_data["name"] = name
+                    logger.info(f"Найдено имя: {name}")
 
-        contact = self._extract_contact(last_user_msg)
-        if contact:
-            lead_data["contact"] = contact
-            logger.info(f"Найден контакт: {contact}")
+            # Извлекаем контакт
+            if not lead_data.get("contact"):
+                contact = self._extract_contact(message_text)
+                if contact:
+                    lead_data["contact"] = contact
+                    logger.info(f"Найден контакт: {contact}")
 
-        budget = self._extract_budget(last_user_msg)
-        if budget:
-            lead_data["budget"] = budget
-            logger.info(f"Найден бюджет: {budget}")
+            # Извлекаем бюджет
+            if not lead_data.get("budget"):
+                budget = self._extract_budget(message_text)
+                if budget:
+                    lead_data["budget"] = budget
+                    logger.info(f"Найден бюджет: {budget}")
 
-        interest = self._extract_interest(last_user_msg, lead_data)
-        if interest:
-            lead_data["interest"] = interest
-            logger.info(f"Найден интерес: {interest}")
+            # Извлекаем интерес
+            if not lead_data.get("interest"):
+                interest = self._extract_interest(message_text, lead_data)
+                if interest:
+                    lead_data["interest"] = interest
+                    logger.info(f"Найден интерес: {interest}")
 
         logger.info(f"Итоговые данные: {lead_data}")
         return lead_data
@@ -242,7 +244,8 @@ class LeadCollector:
             r'гантели', r'велосипед', r'гироскутер',
             r'стрижк', r'массаж', r'маникюр',
             r'консультаци', r'приём',
-            r'macbook\s+air', r'nike', r'adidas', r'levis'
+            r'macbook\s+air', r'nike', r'adidas', r'levis',
+            r'замен\s+масл', r'диагностик', r'тормозн'
         ]
 
         for pattern in product_patterns:

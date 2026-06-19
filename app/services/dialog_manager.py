@@ -81,7 +81,7 @@ class DialogManager:
 
     def _analyze_history(self, history: list, current_message: str) -> dict:
         """
-        Анализирует ПОСЛЕДНИЕ 3 сообщения диалога (не всю историю!)
+        Анализирует ПОСЛЕДНИЕ 5 сообщений диалога
         """
         result = {
             "has_interest": False,
@@ -94,13 +94,13 @@ class DialogManager:
             "name_text": None,
         }
 
-        # ВАЖНО: Берём ТОЛЬКО последние 3 сообщения + текущее
-        recent_history = history[-3:] if len(history) >= 3 else history
+        # Берём последние 5 сообщений + текущее
+        recent_history = history[-5:] if len(history) >= 5 else history
         all_user_texts = [msg["content"] for msg in recent_history if msg["role"] == "user"]
         all_user_texts.append(current_message)
         full_text = " ".join(all_user_texts).lower()
 
-        logger.info(f"🔍 Анализирую {len(all_user_texts)} свежих сообщений: {full_text[:100]}...")
+        logger.info(f"🔍 Анализирую {len(all_user_texts)} свежих сообщений: {full_text[:150]}...")
 
         # 1. Проверяем ИНТЕРЕС
         interest_keywords = [
@@ -119,7 +119,8 @@ class DialogManager:
             r'окрашивани', r'чистк', r'пилинг',
             r'тормозн', r'двигател', r'подвеск', r'амортизатор',
             r'масло моторное', r'аккумулятор', r'шин',
-            r'джинс', r'levis', r'nike', r'adidas'
+            r'джинс', r'levis', r'nike', r'adidas',
+            r'замен\s+масл', r'диагностик'
         ]
 
         for kw in interest_keywords:
@@ -135,7 +136,7 @@ class DialogManager:
                     result["interest_text"] = pattern
                     break
 
-        # 2. Проверяем КОНТАКТ
+        # 2. Проверяем КОНТАКТ (телефон или email)
         phone_patterns = [
             r'\+7\d{10}',
             r'8\d{10}',
@@ -153,27 +154,41 @@ class DialogManager:
             result["has_contact"] = True
             result["contact_text"] = "email"
 
-        # 3. Проверяем БЮДЖЕТ
+        # 3. Проверяем БЮДЖЕТ — ВАЖНО: ищем в ТЕКУЩЕМ сообщении тоже!
         budget_patterns = [
-            r'бюджет[:\s]*\d+',
-            r'\d+\s*(руб|рублей|тыс|к|₽)',
-            r'за\s+\d+',
-            r'до\s+\d+\s*руб',
-            r'\d+\s*[-–]\s*\d+',
+            r'бюджет[:\s]*(\d+[\s\-]?\d*)',
+            r'(\d+)\s*(руб|рублей|тыс|к|₽)',
+            r'за\s+(\d+)',
+            r'до\s+(\d+)\s*руб',
+            r'(\d+)\s*[-–]\s*(\d+)',
+            r'сумм[:а]*\s*(\d+)',
+            r'рассчитыва[ю|ем]*\s*(на)?\s*(\d+)',
         ]
 
+        # Проверяем текущее сообщение ПЕРВЫМ
+        current_lower = current_message.lower()
         for pattern in budget_patterns:
-            if re.search(pattern, full_text):
+            if re.search(pattern, current_lower):
                 result["has_budget"] = True
                 result["budget_text"] = "бюджет"
+                logger.info(f"✅ Бюджет найден в текущем сообщении: {current_message}")
                 break
+
+        # Если в текущем не нашли — проверяем историю
+        if not result["has_budget"]:
+            for pattern in budget_patterns:
+                if re.search(pattern, full_text):
+                    result["has_budget"] = True
+                    result["budget_text"] = "бюджет"
+                    logger.info(f"✅ Бюджет найден в истории")
+                    break
 
         # 4. Проверяем ИМЯ
         name_patterns = [
-            r'имя[:\s]+\w+',
-            r'меня зовут\s+\w+',
-            r'мое имя\s+\w+',
-            r'зовут\s+\w+',
+            r'имя[:\s]+(\w+)',
+            r'меня зовут\s+(\w+)',
+            r'мое имя\s+(\w+)',
+            r'зовут\s+(\w+)',
         ]
 
         for pattern in name_patterns:
@@ -182,6 +197,7 @@ class DialogManager:
                 result["name_text"] = "имя"
                 break
 
+        logger.info(f"📊 Результат анализа: интерес={result['has_interest']}, контакт={result['has_contact']}, бюджет={result['has_budget']}, имя={result['has_name']}")
         return result
 
     async def _get_llm_response(self, user_message: str, history: list, niche_config) -> str:
@@ -206,6 +222,10 @@ class DialogManager:
         if not analysis["has_name"]:
             missing_parts.append("имя")
 
+        # 🔧 ВАЖНО: Если бюджет УЖЕ есть — НЕ спрашиваем снова!
+        if analysis["has_budget"] and "бюджет" not in missing_parts:
+            logger.info("✅ Бюджет уже есть — НЕ спрашиваем снова")
+
         # Строим инструкцию для LLM
         if missing_parts:
             missing_instruction = f"""
@@ -229,10 +249,16 @@ class DialogManager:
 
 ВАЖНО: За один раз спрашивай ТОЛЬКО ОДНО — самое важное.
 Приоритет: контакт > бюджет > имя
+
+🚫 КАТЕГОРИЧЕСКИ НЕЛЬЗЯ:
+- Повторять вопрос если клиент УЖЕ ответил на него
+- Спрашивать бюджет если он уже указан (смотри анализ выше)
+- Спрашивать телефон если он уже есть
 """
         else:
             missing_instruction = """
 ✅ ВСЕ ДАННЫЕ СОБРАНЫ! Просто подтверди и жди создания лида.
+НЕ задавай больше вопросов — все данные уже есть!
 """
 
         full_prompt = f"""ИСТОРИЯ ДИАЛОГА:
@@ -248,6 +274,7 @@ class DialogManager:
 4. Будь краток — 1-2 предложения
 5. Если клиент просит скидку — отвечай что это решает менеджер
 6. Если чего-то не хватает — спроси ОДНИМ естественным вопросом
+7. НЕ спрашивай то что клиент УЖЕ сказал (смотри анализ выше)
 
 Ответь кратко и естественно."""
 
