@@ -15,11 +15,11 @@ class LeadCollector:
     async def check_and_collect_lead(self, user_id: int, history: list[dict]) -> Lead | None:
         """
         Создаёт лид ТОЛЬКО когда есть ВСЕ данные: интерес + контакт + бюджет
+        ВСЕГДА создаёт НОВЫЙ лид - не обновляет старые
         """
         logger.info(f"🔍 Проверка лида для пользователя {user_id}")
         logger.info(f"История диалога: {len(history)} сообщений")
 
-        # Получаем все сообщения пользователя
         user_messages = [msg for msg in history if msg["role"] == "user"]
 
         if not user_messages:
@@ -29,27 +29,20 @@ class LeadCollector:
         last_message = user_messages[-1]["content"]
         logger.info(f"Последнее сообщение: {last_message}")
 
-        # Получаем все лиды пользователя
         all_user_leads = await self._get_all_user_leads(user_id)
 
-        # ВАЖНО: Берём ТОЛЬКО СВЕЖИЕ сообщения (после последнего лида)
         if all_user_leads:
             last_lead = all_user_leads[-1]
             logger.info(f"Последний лид ID={last_lead.id} создан: {last_lead.created_at}")
-
-            # Берём ТОЛЬКО последние 2 сообщения пользователя (после последнего лида)
             relevant_messages = user_messages[-2:]
             logger.info(f"Анализирую {len(relevant_messages)} СВЕЖИХ сообщений")
         else:
-            # Первый лид — берём последние 2-3 сообщения
             relevant_messages = user_messages[-3:] if len(user_messages) >= 3 else user_messages
             logger.info(f"Первый лид — анализирую {len(relevant_messages)} сообщений")
 
-        # Извлекаем данные ТОЛЬКО из свежих сообщений
         lead_data = self._extract_from_messages(relevant_messages)
         logger.info(f"Извлечённые данные: {lead_data}")
 
-        # ВАЖНО: Проверяем наличие ВСЕХ обязательных полей
         missing_fields = []
 
         if not lead_data.get("interest"):
@@ -67,63 +60,16 @@ class LeadCollector:
 
         logger.info(f"✅ Все данные есть: {lead_data}")
 
-        # Проверяем намерение
         if not self._has_intent_in_message(last_message):
             logger.info("❌ Нет намерения")
             return None
 
-        # Проверяем, есть ли уже лид с таким интересом
-        current_interest = lead_data.get("interest", "").lower()
-        existing_lead_with_same_interest = None
-
-        for lead in all_user_leads:
-            lead_interest = (lead.interest or "").lower()
-            if current_interest and lead_interest and current_interest in lead_interest:
-                existing_lead_with_same_interest = lead
-                break
-
-        # Создаём или обновляем лид
-        if existing_lead_with_same_interest:
-            lead = existing_lead_with_same_interest
-            update_data = {}
-
-            if not lead.interest and lead_data.get("interest"):
-                update_data["interest"] = lead_data["interest"]
-            if not lead.contact and lead_data.get("contact"):
-                update_data["contact"] = lead_data["contact"]
-            if not lead.name and lead_data.get("name"):
-                update_data["name"] = lead_data["name"]
-            if not lead.budget and lead_data.get("budget"):
-                update_data["budget"] = lead_data["budget"]
-
-            if update_data:
-                logger.info(f"Обновляем лид {lead.id}: {update_data}")
-                lead = await self.lead_repo.update(lead.id, **update_data)
-                logger.success(f"✅ Лид обновлён: {lead}")
-                return lead
-            else:
-                logger.info("Нет новых данных")
-                return lead
-
-        elif all_user_leads:
-            last_lead = all_user_leads[-1]
-            last_interest = (last_lead.interest or "").lower()
-
-            if current_interest and last_interest and current_interest != last_interest:
-                logger.info(f"Новый интерес '{current_interest}' - создаю новый лид")
-                lead = await self.lead_repo.create(user_id=user_id, **lead_data)
-                logger.success(f"✅ Новый лид создан: {lead}")
-                return lead
-            else:
-                logger.info(f"Обновляю последний лид {last_lead.id}")
-                lead = await self.lead_repo.create(user_id=user_id, **lead_data)
-                logger.success(f"✅ Лид создан: {lead}")
-                return lead
-        else:
-            logger.info(f"Создаём ПЕРВЫЙ лид")
-            lead = await self.lead_repo.create(user_id=user_id, **lead_data)
-            logger.success(f"✅ Первый лид создан: {lead}")
-            return lead
+        # ВАЖНО: ВСЕГДА создаём НОВЫЙ лид если есть все данные
+        # НЕ обновляем старые лиды
+        logger.info(f"Создаём НОВЫЙ лид")
+        lead = await self.lead_repo.create(user_id=user_id, **lead_data)
+        logger.success(f"✅ Новый лид создан: {lead}")
+        return lead
 
     def _has_intent_in_message(self, message: str) -> bool:
         msg_lower = message.lower().strip()
@@ -131,17 +77,20 @@ class LeadCollector:
         category_keywords = [
             "косметика", "электроника", "спорттовары", "книги", "мебель",
             "одежда", "обувь", "игрушки", "продукты", "помощь", "меню",
-            "каталог", "категории", "старт", "назад", "перезапустить"
+            "каталог", "категории", "старт", "назад", "перезапустить",
+            "ноутбуки", "смартфоны", "автотовары", "автозапчасти",
+            "товары для дома", "детские товары", "зоотовары"
         ]
 
         for keyword in category_keywords:
             if keyword in msg_lower:
+                logger.info(f"Категория '{keyword}' - не создаю лид")
                 return False
 
         intent_keywords = [
             "хочу купить", "купить", "заказать", "покупаю",
             "интересует", "ищу", "нужен", "нужна", "нужно", "хочу",
-            "расскажите про", "покажи", "дайте"
+            "расскажите про", "покажи", "дайте", "хочу оформить", "оформить"
         ]
 
         for keyword in intent_keywords:
@@ -158,7 +107,8 @@ class LeadCollector:
             r'диван', r'кроссовки', r'ноутбук', r'телефон',
             r'гантели', r'велосипед', r'беговая\s+дорожк',
             r'мишк', r'игрушк', r'учебник', r'книга',
-            r'macbook\s+air', r'nike', r'adidas', r'levis'
+            r'macbook\s+air', r'nike', r'adidas', r'levis',
+            r'маникюр', r'стрижк', r'массаж'
         ]
 
         for pattern in product_patterns:
@@ -168,58 +118,53 @@ class LeadCollector:
         return False
 
     def _extract_from_messages(self, messages: list[dict]) -> dict:
-        """Извлекает данные ТОЛЬКО из предоставленных сообщений"""
+        """Извлекает данные ТОЛЬКО из ПОСЛЕДНЕГО сообщения пользователя"""
         lead_data = {}
 
         if not messages:
             return lead_data
 
-        logger.info(f"Анализирую {len(messages)} свежих сообщений")
+        logger.info(f"Анализирую {len(messages)} сообщений")
 
-        # Извлекаем интерес из последнего сообщения
-        last_msg = messages[-1]["content"]
-        interest = self._extract_interest(last_msg)
+        # ВАЖНО: Берём ТОЛЬКО последнее сообщение пользователя
+        last_user_msg = messages[-1]["content"]
+        logger.info(f"Анализирую сообщение: {last_user_msg}")
+
+        # Извлекаем ВСЕ данные ТОЛЬКО из последнего сообщения
+        name = self._extract_name(last_user_msg)
+        if name:
+            lead_data["name"] = name
+            logger.info(f"Найдено имя: {name}")
+
+        contact = self._extract_contact(last_user_msg)
+        if contact:
+            lead_data["contact"] = contact
+            logger.info(f"Найден контакт: {contact}")
+
+        budget = self._extract_budget(last_user_msg)
+        if budget:
+            lead_data["budget"] = budget
+            logger.info(f"Найден бюджет: {budget}")
+
+        interest = self._extract_interest(last_user_msg, lead_data)
         if interest:
             lead_data["interest"] = interest
-
-        # Если не нашли в последнем - ищем во всех свежих
-        if not interest:
-            for msg in reversed(messages):
-                interest = self._extract_interest(msg["content"])
-                if interest:
-                    lead_data["interest"] = interest
-                    break
-
-        # Извлекаем контакт из ВСЕХ свежих сообщений
-        for msg in messages:
-            contact = self._extract_contact(msg["content"])
-            if contact and not lead_data.get("contact"):
-                lead_data["contact"] = contact
-                break
-
-        # Извлекаем бюджет из ВСЕХ свежих сообщений
-        for msg in messages:
-            budget = self._extract_budget(msg["content"])
-            if budget and not lead_data.get("budget"):
-                lead_data["budget"] = budget
-                break
-
-        # Извлекаем имя из ВСЕХ свежих сообщений
-        for msg in messages:
-            name = self._extract_name(msg["content"])
-            if name and not lead_data.get("name"):
-                lead_data["name"] = name
-                break
+            logger.info(f"Найден интерес: {interest}")
 
         logger.info(f"Итоговые данные: {lead_data}")
         return lead_data
 
-    def _extract_interest(self, message: str) -> str | None:
+    def _extract_interest(self, message: str, existing_data: dict = None) -> str | None:
+        """Извлекает интерес из сообщения (ЧИСТЫЙ, без телефона, бюджета, имени)"""
+        if existing_data is None:
+            existing_data = {}
+
         msg_lower = message.lower()
 
         intent_keywords = [
             "хочу купить", "купить", "заказать", "интересует", "ищу", "нужен", "покупаю",
-            "нужна", "нужно", "хочу", "хочу оформить", "оформить"
+            "нужна", "нужно", "хочу", "хочу записаться", "записаться", "запись", "забронировать",
+            "расскажите про", "покажи", "дайте", "хочу оформить", "оформить"
         ]
 
         for kw in intent_keywords:
@@ -228,45 +173,84 @@ class LeadCollector:
                 if len(parts) > 1:
                     interest_text = parts[1].strip()
 
-                    # УДАЛЯЕМ из интереса лишнее
+                    # УДАЛЯЕМ из интереса ВСЁ лишнее:
+                    # 1. Имя (если уже извлечено)
+                    if existing_data.get("name"):
+                        name_lower = existing_data["name"].lower()
+                        interest_text = re.sub(rf'\b{name_lower}\b', '', interest_text, flags=re.IGNORECASE)
+
+                    # 2. Номер телефона
                     interest_text = re.sub(r'[\+\d\s\-\(\)]{10,}', '', interest_text)
+                    # 3. Email
                     interest_text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', '', interest_text)
+                    # 4. Бюджет
                     interest_text = re.sub(r'бюджет[:\s]*\d+', '', interest_text, flags=re.IGNORECASE)
-                    interest_text = re.sub(r'\d+\s*(к|тыс|руб)?\s*(до|за)\s*\d+', '', interest_text, flags=re.IGNORECASE)
-                    interest_text = re.sub(r'за\s+\d+', '', interest_text, flags=re.IGNORECASE)
+                    interest_text = re.sub(r'\d+\s*(к|тыс|руб|рублей)?', '', interest_text, flags=re.IGNORECASE)
+                    # 5. Ключевые слова
                     interest_text = re.sub(r'\bимя\b', '', interest_text, flags=re.IGNORECASE)
                     interest_text = re.sub(r'\bтелефон\b', '', interest_text, flags=re.IGNORECASE)
                     interest_text = re.sub(r'\bпочта\b', '', interest_text, flags=re.IGNORECASE)
                     interest_text = re.sub(r'\bemail\b', '', interest_text, flags=re.IGNORECASE)
                     interest_text = re.sub(r'\bконтакт\b', '', interest_text, flags=re.IGNORECASE)
+                    interest_text = re.sub(r'\bрублей\b', '', interest_text, flags=re.IGNORECASE)
+                    interest_text = re.sub(r'\bруб\b', '', interest_text, flags=re.IGNORECASE)
+                    interest_text = re.sub(r'\bза\b', '', interest_text, flags=re.IGNORECASE)
 
+                    # Удаляем лишние запятые, точки и пробелы
                     interest_text = interest_text.strip()
                     interest_text = re.sub(r'\s+', ' ', interest_text)
                     interest_text = re.sub(r'[,\s]+$', '', interest_text)
+                    interest_text = re.sub(r'^[,\s]+', '', interest_text)
+                    interest_text = re.sub(r',\s*,', ',', interest_text)
+                    interest_text = interest_text.strip(',').strip()
 
-                    if interest_text:
+                    if interest_text and len(interest_text) > 2:
                         return f"{kw} {interest_text}"
                 return message.strip()
 
+        # Проверяем паттерны товаров
         product_patterns = [
-            r'macbook\s+air', r'iphone', r'айфон', r'macbook',
-            r'кроссовки', r'nike', r'adidas', r'levis'
+            r'iphone\s*\d*', r'айфон\s*\d*', r'macbook', r'airpods',
+            r'pantene', r'nivea', r'chanel', r'dior',
+            r'lego\s+\w+', r'barbie',
+            r'парфюм\s+\w+', r'крем\s+\w+', r'шампунь\s+\w+',
+            r'\w+\s+набор', r'книга\s+.+',
+            r'диван', r'кроссовки', r'ноутбук', r'телефон',
+            r'гантели', r'велосипед', r'гироскутер',
+            r'стрижк', r'массаж', r'маникюр',
+            r'консультаци', r'приём',
+            r'macbook\s+air', r'nike', r'adidas', r'levis'
         ]
 
         for pattern in product_patterns:
             if re.search(pattern, msg_lower, re.IGNORECASE):
                 clean_text = message
+                if existing_data.get("name"):
+                    name_lower = existing_data["name"].lower()
+                    clean_text = re.sub(rf'\b{name_lower}\b', '', clean_text, flags=re.IGNORECASE)
                 clean_text = re.sub(r'[\+\d\s\-\(\)]{10,}', '', clean_text)
                 clean_text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', '', clean_text)
                 clean_text = re.sub(r'бюджет[:\s]*\d+', '', clean_text, flags=re.IGNORECASE)
-                clean_text = re.sub(r'за\s+\d+', '', clean_text, flags=re.IGNORECASE)
+                clean_text = re.sub(r'\d+\s*(к|тыс|руб|рублей)?', '', clean_text, flags=re.IGNORECASE)
+                clean_text = re.sub(r'\bимя\b', '', clean_text, flags=re.IGNORECASE)
+                clean_text = re.sub(r'\bтелефон\b', '', clean_text, flags=re.IGNORECASE)
+                clean_text = re.sub(r'\bпочта\b', '', clean_text, flags=re.IGNORECASE)
+                clean_text = re.sub(r'\bemail\b', '', clean_text, flags=re.IGNORECASE)
+                clean_text = re.sub(r'\bконтакт\b', '', clean_text, flags=re.IGNORECASE)
+                clean_text = re.sub(r'\bрублей\b', '', clean_text, flags=re.IGNORECASE)
+                clean_text = re.sub(r'\bруб\b', '', clean_text, flags=re.IGNORECASE)
+                clean_text = re.sub(r'\bза\b', '', clean_text, flags=re.IGNORECASE)
                 clean_text = clean_text.strip()
                 clean_text = re.sub(r'\s+', ' ', clean_text)
+                clean_text = re.sub(r'[,\s]+$', '', clean_text)
+                clean_text = re.sub(r'^[,\s]+', '', clean_text)
+                clean_text = clean_text.strip(',').strip()
                 return clean_text if clean_text else message.strip()
 
         return None
 
     def _extract_contact(self, message: str) -> str | None:
+        """Извлекает контакт (телефон или email)"""
         msg_lower = message.lower()
 
         # Ищем email
@@ -317,6 +301,7 @@ class LeadCollector:
         return None
 
     def _extract_budget(self, message: str) -> str | None:
+        """Извлекает бюджет из сообщения"""
         msg_lower = message.lower()
 
         budget_patterns = [
@@ -365,19 +350,17 @@ class LeadCollector:
         """Извлекает имя из сообщения"""
         msg_lower = message.lower()
 
-        # Ищем имя — РАСШИРЕННЫЕ ПАТТЕРНЫ
         name_patterns = [
-            r'(?:имя|меня зовут|мое имя|зовут)[:\s]+(\w+)',  # имя: валентин, меня зовут валентин
-            r'имя\s+(\w+)',  # имя валентин (без двоеточия)
-            r',\s*(\w+),\s*(?:телефон|бюджет|контакт)',  # , валентин, телефон
-            r'\s(\w+)\s*,\s*бюджет',  # валентин, бюджет
+            r'(?:имя|меня зовут|мое имя|зовут)[:\s]+(\w+)',
+            r'имя\s+(\w+)',
+            r',\s*(\w+),\s*(?:телефон|бюджет|контакт)',
+            r'\s(\w+)\s*,\s*бюджет',
         ]
 
         for pattern in name_patterns:
             name_match = re.search(pattern, msg_lower)
             if name_match:
                 name = name_match.group(1)
-                # Проверяем что это имя (только буквы, не цифры, не служебные слова)
                 if (name.isalpha() and len(name) > 1 and
                     not name.isdigit() and
                     name not in ['бюджет', 'телефон', 'контакт', 'почта', 'email']):
