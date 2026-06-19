@@ -1,15 +1,41 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
-from app.keyboards.main_keyboard import get_main_keyboard, get_back_keyboard
-from app.keyboards.inline_keyboard import (
-    get_laptops_keyboard,
-    get_phones_keyboard,
+from app.keyboards.dynamic_keyboard import (
+    get_main_keyboard,
+    get_back_keyboard,
+    get_category_inline_keyboard,
     get_back_inline_keyboard
 )
+from app.niche.loader import load_niche
 from loguru import logger
+from pathlib import Path
 
 router = Router()
+
+
+def get_current_niche_name() -> str:
+    """Получает текущую нишу"""
+    niche_file = Path("current_niche.txt")
+    if niche_file.exists():
+        return niche_file.read_text(encoding="utf-8").strip()
+    return "default"
+
+
+def get_niche_config():
+    """Загружает конфиг текущей ниши"""
+    return load_niche(get_current_niche_name())
+
+
+def get_category_by_id(cat_id: str) -> dict | None:
+    """Находит категорию по ID"""
+    niche_config = get_niche_config()
+    categories = getattr(niche_config, 'categories', []) or []
+    for cat in categories:
+        if cat.get('id') == cat_id:
+            return cat
+    return None
+
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
@@ -17,333 +43,277 @@ async def cmd_start(message: Message):
     user_id = message.from_user.id
     logger.info(f"Пользователь {user_id} начал диалог")
 
+    niche_config = get_niche_config()
+    welcome_text = getattr(niche_config, 'welcome_text', None)
+
+    if not welcome_text:
+        welcome_text = (
+            f"👋 <b>Привет! Я ваш виртуальный консультант {niche_config.business_name}.</b>\n\n"
+            f"{niche_config.product_description}\n\n"
+            f"Выберите категорию или задайте вопрос:"
+        )
+
     await message.answer(
-        "👋 <b>Привет! Я ваш виртуальный консультант UniversalStore.</b>\n\n"
-        "Я помогу подобрать любой товар под ваши задачи.\n"
-        "У нас есть: электроника, одежда, косметика, мебель, спорттовары, книги, продукты, игрушки, автозапчасти.\n\n"
-        "Выберите категорию или задайте вопрос:",
+        welcome_text,
         reply_markup=get_main_keyboard(),
         parse_mode="HTML"
     )
 
+
+@router.message(F.text == "🏠 Главное меню")
 @router.callback_query(F.data == "main_menu")
-async def main_menu(callback: CallbackQuery):
+async def main_menu(event):
     """Главное меню"""
-    await callback.message.edit_text(
-        "🏪 <b>Выберите категорию:</b>",
-        reply_markup=get_main_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    niche_config = get_niche_config()
+    text = f"🏪 <b>{niche_config.business_name}</b>\n\nВыберите категорию:"
 
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(
+            text,
+            reply_markup=get_category_inline_keyboard(),
+            parse_mode="HTML"
+        )
+        await event.answer()
+    else:
+        await event.answer(
+            text,
+            reply_markup=get_category_inline_keyboard(),
+            parse_mode="HTML"
+        )
+
+
+@router.message(F.text == "🔄 Перезапустить")
 @router.callback_query(F.data == "restart")
-async def restart_bot(callback: CallbackQuery):
+async def restart_bot(event):
     """Перезапуск бота"""
-    await callback.message.delete()
-    await cmd_start(callback.message)
-    await callback.answer("🔄 Бот перезапущен!")
+    if isinstance(event, CallbackQuery):
+        await event.message.delete()
+        await cmd_start(event.message)
+        await event.answer("🔄 Бот перезапущен!")
+    else:
+        await cmd_start(event)
 
+
+# ============================================
+# ОБРАБОТКА КАТЕГОРИЙ ИЗ YAML (универсально)
+# ============================================
+
+async def handle_category(event, cat_id: str):
+    """Универсальный обработчик категории"""
+    category = get_category_by_id(cat_id)
+
+    if not category:
+        text = "❌ Категория не найдена"
+    else:
+        text = category.get('description', 'Нет описания')
+
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(
+            text,
+            reply_markup=get_back_inline_keyboard(),
+            parse_mode="HTML"
+        )
+        await event.answer()
+    else:
+        await event.answer(
+            text,
+            reply_markup=get_back_inline_keyboard(),
+            parse_mode="HTML"
+        )
+
+
+# Обработчики для текстовых кнопок (из ReplyKeyboard)
+@router.message(F.text.startswith("💻 ") | F.text.startswith("📱 ") | F.text.startswith("👕 ") |
+                F.text.startswith("💄 ") | F.text.startswith("🛋️ ") | F.text.startswith("⚽ ") |
+                F.text.startswith("📚 ") | F.text.startswith("🍫 ") | F.text.startswith("🧸 ") |
+                F.text.startswith("🚗 ") | F.text.startswith("💇‍♀️ ") | F.text.startswith("🎨 ") |
+                F.text.startswith("💅 ") | F.text.startswith("✨ ") | F.text.startswith("🔧 ") |
+                F.text.startswith("🛞 ") | F.text.startswith("🛑 ") | F.text.startswith("⚡ "))
+async def handle_text_category(message: Message):
+    """Обработка текстовых кнопок категорий"""
+    text = message.text
+    niche_config = get_niche_config()
+    categories = getattr(niche_config, 'categories', []) or []
+
+    # Ищем категорию по названию
+    for cat in categories:
+        emoji = cat.get('emoji', '')
+        name = cat.get('name', '')
+        if text == f"{emoji} {name}":
+            await handle_category(message, cat.get('id'))
+            return
+
+    # Если не нашли — показываем описание
+    await message.answer(
+        text.replace("Выберите категорию:", ""),
+        reply_markup=get_back_keyboard()
+    )
+
+
+# Обработчики для callback категорий (из InlineKeyboard)
+# UniversalStore категории
 @router.callback_query(F.data == "category_laptops")
 async def category_laptops(callback: CallbackQuery):
-    """Категория: Ноутбуки"""
-    await callback.message.edit_text(
-        "💻 <b>Ноутбуки</b>\n\n"
-        "У нас большой выбор:\n"
-        "• MacBook Pro 14 M3: 120 000 - 150 000₽\n"
-        "• MacBook Air M2: 90 000 - 110 000₽\n"
-        "• ASUS ROG: 80 000 - 120 000₽\n"
-        "• Lenovo Legion: 70 000 - 100 000₽\n"
-        "• HP Pavilion: 50 000 - 70 000₽\n\n"
-        "Выберите подкатегорию:",
-        reply_markup=get_laptops_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await handle_category(callback, "category_laptops")
 
 @router.callback_query(F.data == "category_phones")
 async def category_phones(callback: CallbackQuery):
-    """Категория: Смартфоны"""
-    await callback.message.edit_text(
-        "📱 <b>Смартфоны</b>\n\n"
-        "Популярные модели:\n"
-        "• iPhone 15 Pro Max: 120 000 - 150 000₽\n"
-        "• iPhone 15 Pro: 100 000 - 120 000₽\n"
-        "• iPhone 15: 80 000 - 100 000₽\n"
-        "• Samsung Galaxy S24: 80 000 - 100 000₽\n"
-        "• Xiaomi 13: 50 000 - 70 000₽\n\n"
-        "Выберите подкатегорию:",
-        reply_markup=get_phones_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await handle_category(callback, "category_phones")
 
 @router.callback_query(F.data == "category_clothing")
 async def category_clothing(callback: CallbackQuery):
-    """Категория: Одежда"""
-    await callback.message.edit_text(
-        "👕 <b>Одежда и обувь</b>\n\n"
-        "Популярные товары:\n"
-        "• Куртка зимняя: 5 000 - 15 000₽\n"
-        "• Джинсы Levi's: 4 000 - 8 000₽\n"
-        "• Кроссовки Nike: 6 000 - 15 000₽\n"
-        "• Кроссовки Adidas: 5 000 - 12 000₽\n"
-        "• Платье вечернее: 3 000 - 10 000₽\n"
-        "• Костюм деловой: 8 000 - 20 000₽\n\n"
-        "Что вас интересует?",
-        reply_markup=get_back_inline_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await handle_category(callback, "category_clothing")
 
 @router.callback_query(F.data == "category_cosmetics")
 async def category_cosmetics(callback: CallbackQuery):
-    """Категория: Косметика"""
-    await callback.message.edit_text(
-        "💄 <b>Косметика</b>\n\n"
-        "Популярные товары:\n"
-        "• Крем для лица Nivea: 300 - 800₽\n"
-        "• Шампунь Pantene: 400 - 900₽\n"
-        "• Парфюм Chanel: 8 000 - 15 000₽\n"
-        "• Помада MAC: 1 500 - 2 500₽\n"
-        "• Тушь Maybelline: 500 - 1 200₽\n\n"
-        "Что вас интересует?",
-        reply_markup=get_back_inline_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await handle_category(callback, "category_cosmetics")
 
 @router.callback_query(F.data == "category_furniture")
 async def category_furniture(callback: CallbackQuery):
-    """Категория: Мебель"""
-    await callback.message.edit_text(
-        "🛋️ <b>Мебель</b>\n\n"
-        "Популярные товары:\n"
-        "• Диван угловой: 25 000 - 60 000₽\n"
-        "• Кровать двуспальная: 15 000 - 40 000₽\n"
-        "• Стол обеденный: 8 000 - 20 000₽\n"
-        "• Шкаф-купе: 20 000 - 50 000₽\n"
-        "• Кресло офисное: 5 000 - 15 000₽\n\n"
-        "Что вас интересует?",
-        reply_markup=get_back_inline_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await handle_category(callback, "category_furniture")
 
 @router.callback_query(F.data == "category_sports")
 async def category_sports(callback: CallbackQuery):
-    """Категория: Спорт"""
-    await callback.message.edit_text(
-        "⚽ <b>Спорттовары</b>\n\n"
-        "Популярные товары:\n"
-        "• Велосипед горный: 15 000 - 40 000₽\n"
-        "• Беговая дорожка: 20 000 - 60 000₽\n"
-        "• Гантели набор: 2 000 - 8 000₽\n"
-        "• Коврик для йоги: 1 000 - 3 000₽\n"
-        "• Палатка туристическая: 5 000 - 15 000₽\n\n"
-        "Что вас интересует?",
-        reply_markup=get_back_inline_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await handle_category(callback, "category_sports")
 
 @router.callback_query(F.data == "category_books")
 async def category_books(callback: CallbackQuery):
-    """Категория: Книги"""
-    await callback.message.edit_text(
-        "📚 <b>Книги</b>\n\n"
-        "Популярные товары:\n"
-        "• Книга бестселлер: 500 - 1 500₽\n"
-        "• Учебник: 800 - 2 500₽\n"
-        "• Энциклопедия: 1 500 - 4 000₽\n\n"
-        "Что вас интересует?",
-        reply_markup=get_back_inline_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await handle_category(callback, "category_books")
 
 @router.callback_query(F.data == "category_food")
 async def category_food(callback: CallbackQuery):
-    """Категория: Продукты"""
-    await callback.message.edit_text(
-        "🍫 <b>Продукты</b>\n\n"
-        "Популярные товары:\n"
-        "• Кофе в зернах 1кг: 800 - 2 000₽\n"
-        "• Чай элитный 100г: 500 - 1 500₽\n"
-        "• Шоколад премиум: 300 - 800₽\n"
-        "• Вино хорошее: 1 000 - 3 000₽\n\n"
-        "Что вас интересует?",
-        reply_markup=get_back_inline_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await handle_category(callback, "category_food")
 
 @router.callback_query(F.data == "category_toys")
 async def category_toys(callback: CallbackQuery):
-    """Категория: Игрушки"""
-    await callback.message.edit_text(
-        "🧸 <b>Игрушки</b>\n\n"
-        "Популярные товары:\n"
-        "• LEGO набор: 2 000 - 8 000₽\n"
-        "• Кукла Barbie: 1 500 - 3 000₽\n"
-        "• Машинка на радиоуправлении: 2 000 - 5 000₽\n"
-        "• Настольная игра: 1 000 - 3 000₽\n\n"
-        "Что вас интересует?",
-        reply_markup=get_back_inline_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await handle_category(callback, "category_toys")
 
 @router.callback_query(F.data == "category_auto")
 async def category_auto(callback: CallbackQuery):
-    """Категория: Автозапчасти"""
-    await callback.message.edit_text(
-        "🚗 <b>Автозапчасти</b>\n\n"
-        "Популярные товары:\n"
-        "• Масло моторное 4л: 2 000 - 4 000₽\n"
-        "• Шины летние R16: 4 000 - 8 000₽\n"
-        "• Шины зимние R16: 5 000 - 10 000₽\n"
-        "• Аккумулятор: 5 000 - 10 000₽\n"
-        "• Видеорегистратор: 3 000 - 8 000₽\n\n"
-        "Что вас интересует?",
-        reply_markup=get_back_inline_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await handle_category(callback, "category_auto")
 
+# Beauty Salon категории
+@router.callback_query(F.data == "category_haircut")
+async def category_haircut(callback: CallbackQuery):
+    await handle_category(callback, "category_haircut")
+
+@router.callback_query(F.data == "category_coloring")
+async def category_coloring(callback: CallbackQuery):
+    await handle_category(callback, "category_coloring")
+
+@router.callback_query(F.data == "category_manicure")
+async def category_manicure(callback: CallbackQuery):
+    await handle_category(callback, "category_manicure")
+
+@router.callback_query(F.data == "category_makeup")
+async def category_makeup(callback: CallbackQuery):
+    await handle_category(callback, "category_makeup")
+
+@router.callback_query(F.data == "category_care")
+async def category_care(callback: CallbackQuery):
+    await handle_category(callback, "category_care")
+
+# Auto Service категории
+@router.callback_query(F.data == "category_maintenance")
+async def category_maintenance(callback: CallbackQuery):
+    await handle_category(callback, "category_maintenance")
+
+@router.callback_query(F.data == "category_engine")
+async def category_engine(callback: CallbackQuery):
+    await handle_category(callback, "category_engine")
+
+@router.callback_query(F.data == "category_suspension")
+async def category_suspension(callback: CallbackQuery):
+    await handle_category(callback, "category_suspension")
+
+@router.callback_query(F.data == "category_brakes")
+async def category_brakes(callback: CallbackQuery):
+    await handle_category(callback, "category_brakes")
+
+@router.callback_query(F.data == "category_electric")
+async def category_electric(callback: CallbackQuery):
+    await handle_category(callback, "category_electric")
+
+
+# ============================================
+# ОБЩИЕ КНОПКИ
+# ============================================
+
+@router.message(F.text == "🔥 Акции")
 @router.callback_query(F.data == "promotions")
-async def promotions(callback: CallbackQuery):
+async def promotions(event):
     """Акции и скидки"""
-    await callback.message.edit_text(
+    niche_config = get_niche_config()
+
+    # Универсальные акции
+    text = (
         "🔥 <b>Акции и скидки</b>\n\n"
-        "🎁 При покупке от 50 000₽ — подарок!\n"
-        "💰 Скидка 10% на электронику при trade-in\n"
-        "👕 Скидка 15% на одежду при покупке от 3 вещей\n"
-        "🛋️ Бесплатная доставка мебели\n\n"
-        "Акции действуют до конца месяца!",
-        reply_markup=get_back_keyboard(),
-        parse_mode="HTML"
+        "🎁 При заказе от 5 000₽ — подарок!\n"
+        "💰 Скидка 10% для новых клиентов\n"
+        "👥 Приведи друга — получи бонус\n\n"
+        "Акции действуют до конца месяца!"
     )
-    await callback.answer()
 
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(
+            text,
+            reply_markup=get_back_keyboard(),
+            parse_mode="HTML"
+        )
+        await event.answer()
+    else:
+        await event.answer(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+
+
+@router.message(F.text == "📦 Все товары")
 @router.callback_query(F.data == "all_products")
-async def all_products(callback: CallbackQuery):
-    """Все товары"""
-    await callback.message.edit_text(
-        "📦 <b>Весь ассортимент</b>\n\n"
-        "У нас есть:\n"
-        "💻 Электроника: 500 - 250 000₽\n"
-        "👕 Одежда: 1 000 - 20 000₽\n"
-        "💄 Косметика: 300 - 15 000₽\n"
-        "🛋️ Мебель: 5 000 - 60 000₽\n"
-        "⚽ Спорттовары: 1 000 - 60 000₽\n"
-        "📚 Книги: 500 - 4 000₽\n"
-        "🍫 Продукты: 300 - 3 000₽\n"
-        "🧸 Игрушки: 1 000 - 8 000₽\n"
-        "🚗 Автозапчасти: 2 000 - 10 000₽\n\n"
-        "Напишите, что вас интересует — помогу выбрать!",
-        reply_markup=get_back_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+async def all_products(event):
+    """Все товары/услуги"""
+    niche_config = get_niche_config()
 
+    # Формируем список из категорий
+    categories = getattr(niche_config, 'categories', []) or []
+
+    text = f"📦 <b>{niche_config.business_name}</b>\n\nУ нас есть:\n\n"
+
+    for cat in categories:
+        emoji = cat.get('emoji', '')
+        name = cat.get('name', '')
+        text += f"{emoji} {name}\n"
+
+    text += "\nНапишите, что вас интересует — помогу выбрать!"
+
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(
+            text,
+            reply_markup=get_back_keyboard(),
+            parse_mode="HTML"
+        )
+        await event.answer()
+    else:
+        await event.answer(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
+
+
+@router.message(F.text == "📞 Контакты")
 @router.callback_query(F.data == "contacts")
-async def contacts(callback: CallbackQuery):
+async def contacts(event):
     """Контакты"""
-    await callback.message.edit_text(
-        "📞 <b>Наши контакты</b>\n\n"
-        "📍 Адрес: г. Москва, ул. Примерная, 123\n"
-        "📱 Телефон: +7 (999) 123-45-67\n"
-        "📧 Email: info@universalstore.ru\n"
-        "🕐 Время работы: 10:00 - 20:00\n\n"
-        "Мы всегда на связи!",
-        reply_markup=get_back_keyboard(),
-        parse_mode="HTML"
+    niche_config = get_niche_config()
+
+    text = (
+        f"📞 <b>Контакты {niche_config.business_name}</b>\n\n"
+        f"📱 Телефон: +7 (999) 123-45-67\n"
+        f"📧 Email: info@{niche_config.business_name.lower().replace(' ', '')}.ru\n"
+        f"🕐 Время работы: 10:00 - 20:00\n\n"
+        f"Мы всегда на связи!"
     )
-    await callback.answer()
 
-# Обработчики подкатегорий ноутбуков
-@router.callback_query(F.data.startswith("laptop_"))
-async def laptop_subcategory(callback: CallbackQuery):
-    """Подкатегории ноутбуков"""
-    subcat = callback.data.replace("laptop_", "")
-
-    texts = {
-        "work": "💼 <b>Ноутбуки для работы</b>\n\n"
-                "• MacBook Air M2: 90 000 - 110 000₽\n"
-                "• Dell XPS 13: 100 000 - 130 000₽\n"
-                "• HP Pavilion: 50 000 - 70 000₽\n"
-                "• Lenovo ThinkPad: 80 000 - 120 000₽",
-        "gaming": "🎮 <b>Игровые ноутбуки</b>\n\n"
-                  "• ASUS ROG Strix: 80 000 - 120 000₽\n"
-                  "• Lenovo Legion 5: 70 000 - 100 000₽\n"
-                  "• MSI Katana: 90 000 - 130 000₽",
-        "budget_50": "💰 <b>Бюджетные ноутбуки до 50к</b>\n\n"
-                     "• HP Pavilion 15: 45 000 - 50 000₽\n"
-                     "• Lenovo IdeaPad: 40 000 - 48 000₽\n"
-                     "• ASUS VivoBook: 42 000 - 50 000₽",
-        "premium": "💎 <b>Премиум ноутбуки</b>\n\n"
-                   "• MacBook Pro 16 M3: 200 000 - 250 000₽\n"
-                   "• Dell XPS 15: 150 000 - 180 000₽\n"
-                   "• ASUS ZenBook Pro: 130 000 - 160 000₽",
-        "macbook": "🍎 <b>MacBook</b>\n\n"
-                   "• MacBook Air M2: 90 000 - 110 000₽\n"
-                   "• MacBook Pro 14 M3: 120 000 - 150 000₽\n"
-                   "• MacBook Pro 16 M3: 200 000 - 250 000₽",
-        "windows": "🪟 <b>Windows ноутбуки</b>\n\n"
-                   "• ASUS ROG: 80 000 - 120 000₽\n"
-                   "• Lenovo Legion: 70 000 - 100 000₽\n"
-                   "• Dell XPS: 100 000 - 180 000₽\n"
-                   "• HP Pavilion: 50 000 - 70 000₽"
-    }
-
-    text = texts.get(subcat, "Выберите подкатегорию")
-    await callback.message.edit_text(
-        text,
-        reply_markup=get_back_inline_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
-
-# Обработчики подкатегорий смартфонов
-@router.callback_query(F.data.startswith("phone_"))
-async def phone_subcategory(callback: CallbackQuery):
-    """Подкатегории смартфонов"""
-    subcat = callback.data.replace("phone_", "")
-
-    texts = {
-        "iphone": "🍎 <b>iPhone</b>\n\n"
-                  "• iPhone 15 Pro Max: 120 000 - 150 000₽\n"
-                  "• iPhone 15 Pro: 100 000 - 120 000₽\n"
-                  "• iPhone 15: 80 000 - 100 000₽\n"
-                  "• iPhone 14 Pro: 90 000 - 110 000₽\n"
-                  "• iPhone 14: 70 000 - 90 000₽",
-        "samsung": "📱 <b>Samsung</b>\n\n"
-                   "• Galaxy S24 Ultra: 120 000 - 140 000₽\n"
-                   "• Galaxy S24: 80 000 - 100 000₽\n"
-                   "• Galaxy S23: 60 000 - 80 000₽\n"
-                   "• Galaxy A54: 35 000 - 45 000₽",
-        "xiaomi": "📱 <b>Xiaomi</b>\n\n"
-                  "• Xiaomi 13: 50 000 - 70 000₽\n"
-                  "• Xiaomi 12: 40 000 - 55 000₽\n"
-                  "• Redmi Note 13: 25 000 - 35 000₽",
-        "budget_30": "💰 <b>Смартфоны до 30к</b>\n\n"
-                     "• Redmi Note 13: 25 000 - 30 000₽\n"
-                     "• Realme 11: 22 000 - 28 000₽\n"
-                     "• Samsung A24: 20 000 - 25 000₽",
-        "budget_50": "💰 <b>Смартфоны 30-50к</b>\n\n"
-                     "• Xiaomi 13 Lite: 35 000 - 45 000₽\n"
-                     "• Samsung A54: 35 000 - 45 000₽\n"
-                     "• Nothing Phone 2: 45 000 - 50 000₽",
-        "flagship": "💎 <b>Флагманы</b>\n\n"
-                    "• iPhone 15 Pro Max: 120 000 - 150 000₽\n"
-                    "• Samsung S24 Ultra: 120 000 - 140 000₽\n"
-                    "• Xiaomi 13 Ultra: 90 000 - 110 000₽"
-    }
-
-    text = texts.get(subcat, "Выберите подкатегорию")
-    await callback.message.edit_text(
-        text,
-        reply_markup=get_back_inline_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(
+            text,
+            reply_markup=get_back_keyboard(),
+            parse_mode="HTML"
+        )
+        await event.answer()
+    else:
+        await event.answer(text, reply_markup=get_back_keyboard(), parse_mode="HTML")
