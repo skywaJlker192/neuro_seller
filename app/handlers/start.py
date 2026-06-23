@@ -317,7 +317,7 @@ async def process_contact(message: Message, state: FSMContext):
     await state.update_data(contact=contact)
 
     await message.answer(
-        "💰 Введите ваш <b>бюджет</b> (например: 3000):",
+        "💰 Введите ваш <b>бюджет</b>:",
         parse_mode="HTML"
     )
     await state.set_state(ServiceForm.budget)
