@@ -16,6 +16,7 @@ from app.services.google_sheets import sheets_exporter
 from app.config import settings
 from loguru import logger
 from pathlib import Path
+import re
 
 router = Router()
 
@@ -142,6 +143,89 @@ async def restart_bot(event, state: FSMContext):
 
 
 # ============================================
+# 🔧 ИСПРАВЛЕНО: ОБРАБОТКА КНОПОК УСЛУГ
+# ============================================
+
+@router.callback_query(F.data.startswith("svc::"))
+async def handle_service_click(callback: CallbackQuery, state: FSMContext):
+    """
+    Обработчик нажатия на услугу.
+    🔧 Callback формат: svc::{category_id}::{service_index}
+    """
+    logger.info(f"🎯 handle_service_click вызван! Data: {callback.data}")
+
+    try:
+        # 🔧 Парсим через ::
+        parts = callback.data.split("::")
+        logger.info(f"📋 Parts: {parts}")
+
+        if len(parts) != 3:
+            logger.error(f"❌ Неверный формат: {callback.data}")
+            await callback.answer("❌ Ошибка формата callback", show_alert=True)
+            return
+
+        _, category_id, service_index_str = parts
+
+        try:
+            service_index = int(service_index_str)
+        except ValueError:
+            logger.error(f"❌ Неверный индекс: {service_index_str}")
+            await callback.answer("❌ Ошибка индекса", show_alert=True)
+            return
+
+        logger.info(f"✅ Category: {category_id}, Index: {service_index}")
+
+        # Получаем информацию об услуге
+        category = get_category_by_id(category_id)
+        if not category:
+            logger.error(f"❌ Категория {category_id} не найдена")
+            await callback.answer("❌ Категория не найдена", show_alert=True)
+            return
+
+        services = category.get('services', [])
+        if service_index >= len(services):
+            logger.error(f"❌ Услуга {service_index} не найдена в {category_id}")
+            await callback.answer("❌ Услуга не найдена", show_alert=True)
+            return
+
+        service = services[service_index]
+        service_name = service.get('name', 'Услуга')
+        price = service.get('price', '')
+        duration = service.get('duration', '')
+
+        logger.info(f"✅ Выбрана услуга: {service_name}")
+
+        # Сохраняем данные услуги в FSM
+        await state.update_data(
+            service_name=service_name,
+            category_id=category_id,
+            service_index=service_index
+        )
+
+        # Показываем форму — просим имя
+        text = (
+            f"✍️ <b>Запись на услугу</b>\n\n"
+            f"📋 <b>Услуга:</b> {service_name}\n"
+        )
+        if price:
+            text += f"💰 <b>Стоимость:</b> {price}\n"
+        if duration:
+            text += f"⏱️ <b>Длительность:</b> {duration}\n"
+
+        text += "\n👤 Введите ваше <b>имя</b>:"
+
+        await callback.message.edit_text(text, parse_mode="HTML")
+        await callback.answer()
+
+        # Переходим к состоянию ввода имени
+        await state.set_state(ServiceForm.name)
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка в handle_service_click: {e}", exc_info=True)
+        await callback.answer(f"❌ Ошибка: {str(e)}", show_alert=True)
+
+
+# ============================================
 # ОБРАБОТКА КАТЕГОРИЙ — ПОКАЗЫВАЕМ УСЛУГИ КНОПКАМИ
 # ============================================
 
@@ -191,71 +275,6 @@ async def handle_category(event, cat_id: str, state: FSMContext):
 
 
 # ============================================
-# ОБРАБОТКА КНОПОК УСЛУГ (service_*)
-# ============================================
-
-@router.callback_query(F.data.startswith("service_"))
-async def handle_service_click(callback: CallbackQuery, state: FSMContext):
-    """
-    Обработчик нажатия на услугу.
-    Callback формат: service_{category_id}_{service_index}
-    """
-    # Парсим callback
-    parts = callback.data.split("_", 2)
-    if len(parts) < 3:
-        await callback.answer("❌ Ошибка")
-        return
-
-    category_id = parts[1]
-    try:
-        service_index = int(parts[2])
-    except ValueError:
-        await callback.answer("❌ Ошибка")
-        return
-
-    # Получаем информацию об услуге
-    category = get_category_by_id(category_id)
-    if not category:
-        await callback.answer("❌ Категория не найдена")
-        return
-
-    services = category.get('services', [])
-    if service_index >= len(services):
-        await callback.answer("❌ Услуга не найдена")
-        return
-
-    service = services[service_index]
-    service_name = service.get('name', 'Услуга')
-    price = service.get('price', '')
-    duration = service.get('duration', '')
-
-    # Сохраняем данные услуги в FSM
-    await state.update_data(
-        service_name=service_name,
-        category_id=category_id,
-        service_index=service_index
-    )
-
-    # Показываем форму — просим имя
-    text = (
-        f"✍️ <b>Запись на услугу</b>\n\n"
-        f"📋 <b>Услуга:</b> {service_name}\n"
-    )
-    if price:
-        text += f"💰 <b>Стоимость:</b> {price}\n"
-    if duration:
-        text += f"⏱️ <b>Длительность:</b> {duration}\n"
-
-    text += "\n👤 Введите ваше <b>имя</b>:"
-
-    await callback.message.edit_text(text, parse_mode="HTML")
-    await callback.answer()
-
-    # Переходим к состоянию ввода имени
-    await state.set_state(ServiceForm.name)
-
-
-# ============================================
 # ОБРАБОТКА ФОРМЫ ЗАПИСИ (FSM)
 # ============================================
 
@@ -274,7 +293,7 @@ async def process_name(message: Message, state: FSMContext):
     await message.answer(
         f"✅ Приятно познакомиться, {name}!\n\n"
         f"📱 Теперь введите ваш <b>номер телефона</b>:\n"
-        f"(например: +79991234567)",
+        f"(например: +79999999999)",
         parse_mode="HTML"
     )
     await state.set_state(ServiceForm.contact)
@@ -286,7 +305,6 @@ async def process_contact(message: Message, state: FSMContext):
     contact = message.text.strip()
 
     # Простая проверка телефона
-    import re
     phone_clean = re.sub(r'[^\d+]', '', contact)
     if len(phone_clean) < 10:
         await message.answer(

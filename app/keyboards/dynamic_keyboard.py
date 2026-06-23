@@ -149,13 +149,14 @@ def get_back_inline_keyboard() -> InlineKeyboardMarkup:
 
 
 # ============================================
-# НОВОЕ: КЛАВИАТУРА С УСЛУГАМИ
+# КЛАВИАТУРА С УСЛУГАМИ
 # ============================================
 
 def get_services_keyboard(category_id: str, niche_name: str = None) -> InlineKeyboardMarkup:
     """
     Создаёт инлайн-клавиатуру с услугами выбранной категории.
     Каждая услуга — отдельная кнопка.
+    🔧 ИСПРАВЛЕНО: используется :: как разделитель в callback_data
     """
     if niche_name is None:
         niche_name = get_current_niche_name()
@@ -199,7 +200,7 @@ def get_services_keyboard(category_id: str, niche_name: str = None) -> InlineKey
             ]
         )
 
-    # Создаём кнопки для каждой услуги
+    # 🔧 ИСПРАВЛЕНО: используем :: как разделитель
     buttons = []
     for i, service in enumerate(services):
         service_name = service.get('name', f'Услуга {i+1}')
@@ -210,8 +211,8 @@ def get_services_keyboard(category_id: str, niche_name: str = None) -> InlineKey
         if price:
             button_text = f"{service_name} — {price}"
 
-        # Callback data: service_{category_id}_{index}
-        callback_data = f"service_{category_id}_{i}"
+        # 🔧 ВАЖНО: разделитель :: вместо _
+        callback_data = f"svc::{category_id}::{i}"
 
         buttons.append([
             InlineKeyboardButton(
@@ -274,114 +275,3 @@ def get_category_info(category_id: str, niche_name: str = None) -> dict | None:
             return cat
 
     return None
-
-def get_services_keyboard(category_id: str, niche_name: str = None) -> InlineKeyboardMarkup:
-    """Создаёт инлайн-клавиатуру с услугами категории"""
-    if niche_name is None:
-        niche_name = get_current_niche_name()
-
-    try:
-        niche_config = load_niche(niche_name)
-    except Exception as e:
-        logger.error(f"Ошибка загрузки ниши: {e}")
-        return InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]]
-        )
-
-    categories = get_categories_from_config(niche_config)
-
-    # Ищем категорию
-    target_category = None
-    for cat in categories:
-        if cat.get('id') == category_id:
-            target_category = cat
-            break
-
-    if not target_category:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]]
-        )
-
-    # Получаем услуги
-    services = target_category.get('services', [])
-
-    if not services:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]]
-        )
-
-    # Создаём кнопки для каждой услуги
-    buttons = []
-    for i, service in enumerate(services):
-        service_name = service.get('name', f'Услуга {i+1}')
-        price = service.get('price', '')
-
-        button_text = f"{service_name} — {price}" if price else service_name
-        callback_data = f"service_{category_id}_{i}"
-
-        buttons.append([
-            InlineKeyboardButton(text=button_text, callback_data=callback_data)
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="main_menu")
-    ])
-
-    logger.info(f"Создана клавиатура с {len(services)} услугами для {category_id}")
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-# В конце файла добавь эту функцию:
-def get_services_keyboard(category_id: str, niche_name: str = None) -> InlineKeyboardMarkup:
-    """Создаёт инлайн-клавиатуру с услугами категории"""
-    if niche_name is None:
-        niche_name = get_current_niche_name()
-
-    try:
-        niche_config = load_niche(niche_name)
-    except Exception as e:
-        logger.error(f"Ошибка загрузки ниши: {e}")
-        return InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]]
-        )
-
-    categories = get_categories_from_config(niche_config)
-
-    # Ищем категорию
-    target_category = None
-    for cat in categories:
-        if cat.get('id') == category_id:
-            target_category = cat
-            break
-
-    if not target_category:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]]
-        )
-
-    # Получаем услуги
-    services = target_category.get('services', [])
-
-    if not services:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]]
-        )
-
-    # Создаём кнопки для каждой услуги
-    buttons = []
-    for i, service in enumerate(services):
-        service_name = service.get('name', f'Услуга {i+1}')
-        price = service.get('price', '')
-
-        button_text = f"{service_name} — {price}" if price else service_name
-        callback_data = f"service_{category_id}_{i}"
-
-        buttons.append([
-            InlineKeyboardButton(text=button_text, callback_data=callback_data)
-        ])
-
-    buttons.append([
-        InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="main_menu")
-    ])
-
-    logger.info(f"Создана клавиатура с {len(services)} услугами для {category_id}")
-    return InlineKeyboardMarkup(inline_keyboard=buttons)

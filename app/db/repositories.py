@@ -19,6 +19,17 @@ class UserRepository:
             return user
 
 class DialogRepository:
+    async def clear_history(self, user_id: int):
+        """Очищает историю диалога пользователя"""
+        from sqlalchemy import delete
+        from app.db.models import Dialog
+        async with async_session() as session:
+            await session.execute(
+                delete(Dialog).where(Dialog.user_id == user_id)
+            )
+            await session.commit()
+        logger.info(f"🗑️ История диалога пользователя {user_id} очищена")
+
     async def save_message(self, user_id: int, role: str, content: str):
         """Сохраняет сообщение в историю"""
         async with async_session() as session:

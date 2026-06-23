@@ -19,10 +19,10 @@ from app.db.database import init_db
 
 # Рабочие прокси (попробуй по очереди если один не работает):
 PROXY_URLS = [
-    "http://84.47.150.125:1080",       # Russia, elite
-    "http://62.133.62.231:1081",       # France, elite HTTP
-    "http://212.58.132.5:8888",        # UK, HTTP/HTTPS
-    "http://178.156.224.42:3128",      # Romania, elite HTTP
+    "http://37.49.224.15:3128",
+    "http://47.84.204.82:80",
+    "http://85.192.28.62:7443",
+    "http://185.200.188.234:10001",
 ]
 
 
