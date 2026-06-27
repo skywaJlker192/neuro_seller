@@ -111,9 +111,9 @@ def get_category_inline_keyboard(niche_name: str = None) -> InlineKeyboardMarkup
     except Exception as e:
         logger.error(f"Ошибка загрузки ниши: {e}")
         return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")]
-            ]
+            # inline_keyboard=[
+            #     [InlineKeyboardButton(text="🏠 Главное меню", callback_data="all_products")]
+            # ]
         )
 
     categories = get_categories_from_config(niche_config)
@@ -132,9 +132,9 @@ def get_category_inline_keyboard(niche_name: str = None) -> InlineKeyboardMarkup
                 )
             ])
 
-    buttons.append([
-        InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")
-    ])
+    # buttons.append([
+    #     InlineKeyboardButton(text="🏠 Главное меню", callback_data="all_products")
+    # ])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
